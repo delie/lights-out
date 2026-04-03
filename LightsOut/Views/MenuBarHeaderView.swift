@@ -1,7 +1,3 @@
-//
-//  MenuBarHeaderView.swift
-//  BlackoutTest
-
 import SwiftUI
 
 struct MenuBarHeader: View {

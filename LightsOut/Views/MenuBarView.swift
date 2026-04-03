@@ -1,7 +1,3 @@
-//
-//  MenuBarView.swift
-//  BlackoutTest
-
 import SwiftUI
 import LaunchAtLogin
 

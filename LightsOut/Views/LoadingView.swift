@@ -1,8 +1,3 @@
-//
-//  LoadingView.swift
-//  BlackoutTest
-
-
 import SwiftUI
 
 struct LoadingView: View {

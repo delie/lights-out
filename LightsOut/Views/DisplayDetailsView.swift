@@ -1,8 +1,3 @@
-    //
-//  DisplayDetails.swift
-//  BlackoutTest
-
-
 import SwiftUI
 
 struct DisplayDetails: View {

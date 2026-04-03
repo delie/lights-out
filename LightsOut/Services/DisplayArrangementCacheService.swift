@@ -1,9 +1,5 @@
-//
-//  DisplayArrangementCacheService.swift
-//  BlackoutTest
-
 import CoreGraphics
-import SwiftUI
+import Foundation
 
 class DisplayArrangementCacheService {
     private var displayArrangement: DisplayArrangement?
@@ -24,6 +20,8 @@ class DisplayArrangementCacheService {
     }
     
     func restore() throws {
+        guard let arrangement = displayArrangement else { return }
+
         var configRef: CGDisplayConfigRef?
         let beginConfigError = CGBeginDisplayConfiguration(&configRef)
         guard beginConfigError == .success, let config = configRef else {
@@ -31,8 +29,8 @@ class DisplayArrangementCacheService {
                 NSLocalizedDescriptionKey: "Failed to begin display configuration."
             ])
         }
-        
-        for (displayID, position) in displayArrangement!.positions {
+
+        for (displayID, position) in arrangement.positions {
             let moveError = CGConfigureDisplayOrigin(config, displayID, Int32(position.x), Int32(position.y))
             guard moveError == .success else {
                 CGCancelDisplayConfiguration(config)
@@ -49,7 +47,6 @@ class DisplayArrangementCacheService {
             ])
         }
         
-        print("Restored display arrangement to original positions.")
     }
 }
 

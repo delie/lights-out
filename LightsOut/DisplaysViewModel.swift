@@ -1,7 +1,3 @@
-//
-//  DisplaysViewModel.swift
-//  BlackoutTest
-
 import CoreGraphics
 import SwiftUI
 
@@ -15,7 +11,7 @@ class DisplaysViewModel: ObservableObject {
 
     @Published var displays: [DisplayInfo] = []
     private var gammaService = GammaUpdateService()
-    private var arrengementCache = DisplayArrangementCacheService()
+    private var arrangementCache = DisplayArrangementCacheService()
     private let defaults: UserDefaults
     
     init(defaults: UserDefaults = .standard) {
@@ -30,7 +26,6 @@ class DisplaysViewModel: ObservableObject {
     }
     
     func fetchDisplays() {
-        print("Fetching displays.")
         var activeDisplayCount: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &activeDisplayCount)
         var activeDisplays = [CGDirectDisplayID](repeating: 0, count: Int(activeDisplayCount))
@@ -41,12 +36,12 @@ class DisplaysViewModel: ObservableObject {
         var onlineDisplays = [CGDirectDisplayID](repeating: 0, count: Int(onlineDisplayCount))
         CGGetOnlineDisplayList(onlineDisplayCount, &onlineDisplays, &onlineDisplayCount)
         
-        var new_displays: Set<DisplayInfo> = Set()
+        var newDisplays: Set<DisplayInfo> = []
         let primaryDisplayID = CGMainDisplayID()
         let activeDisplaySet = Set(activeDisplays.prefix(Int(activeDisplayCount)))
         let persistedDisconnectedDisplayIDs = loadDisconnectedDisplayIDs()
-        
-        new_displays = Set(onlineDisplays.prefix(Int(onlineDisplayCount)).compactMap { displayID in
+
+        newDisplays = Set(onlineDisplays.prefix(Int(onlineDisplayCount)).compactMap { displayID in
             var displayName = "Display \(displayID)"
             if let screen = NSScreen.screens.first(where: { $0.displayID == displayID }) {
                 displayName = screen.localizedName
@@ -62,8 +57,8 @@ class DisplaysViewModel: ObservableObject {
             )
         })
 
-        for displayID in persistedDisconnectedDisplayIDs where !new_displays.contains(where: { $0.id == displayID }) {
-            new_displays.insert(
+        for displayID in persistedDisconnectedDisplayIDs where !newDisplays.contains(where: { $0.id == displayID }) {
+            newDisplays.insert(
                 DisplayInfo(
                     id: displayID,
                     name: "Display \(displayID)",
@@ -77,11 +72,11 @@ class DisplaysViewModel: ObservableObject {
         for display in displays {
             if display.state.isOff() || display.state == .pending {
                 display.isPrimary = false
-                new_displays.insert(display)
+                newDisplays.insert(display)
             }
         }
         
-        displays = Array(new_displays)
+        displays = Array(newDisplays)
         
         displays.sort {
             if $0.isPrimary {
@@ -93,7 +88,7 @@ class DisplaysViewModel: ObservableObject {
             return $0.id < $1.id
         }
         
-        try! arrengementCache.cache()
+        try? arrangementCache.cache()
     }
     
     func disconnectDisplay(display: DisplayInfo) throws(DisplayError) {
@@ -138,7 +133,7 @@ class DisplaysViewModel: ObservableObject {
             try mirrorDisplay(display)
             gammaService.setZeroGamma(for: display)
         } catch {
-            throw DisplayError(msg: "Faild to apply a mirror-based disable to '\(display.name)'.")
+            throw DisplayError(msg: "Failed to apply a mirror-based disable to '\(display.name)'.")
         }
         unRegisterMirrors(display: display)
     }
@@ -216,8 +211,7 @@ extension DisplaysViewModel {
         
         do {
             try unmirrorDisplay(display)
-            try arrengementCache.restore()
-            print("Unmirrored display \(display.name)!")
+            try arrangementCache.restore()
         } catch {
             throw DisplayError(
                 msg: "Failed to enable '\(display.name)'."
@@ -228,7 +222,7 @@ extension DisplaysViewModel {
     }
 }
 
-// MARK: - Mirroring Extention
+// MARK: - Mirroring Extension
 
 extension DisplaysViewModel {
     fileprivate func mirrorDisplay(_ display: DisplayInfo) throws {
@@ -262,7 +256,6 @@ extension DisplaysViewModel {
         }
         
         alternateDisplay.mirroredTo.append(display)
-        print("Successfully mirrored display \(display.name) to \(alternateDisplay.name).")
     }
     
     fileprivate func unmirrorDisplay(_ display: DisplayInfo) throws {
@@ -295,10 +288,10 @@ extension DisplaysViewModel {
             )
         }
 
-        // Update the mirroredTo and mirrorSource relationships
-        display.mirrorSource?.mirroredTo.remove(at: display.mirrorSource!.mirroredTo.firstIndex(of: display)!)
-
-        print("Successfully unmirrored display \(display.name).")
+        if let source = display.mirrorSource,
+           let index = source.mirroredTo.firstIndex(of: display) {
+            source.mirroredTo.remove(at: index)
+        }
     }
     
     private func selectAlternateDisplay(excluding currentDisplayID: CGDirectDisplayID) -> DisplayInfo? {
@@ -359,11 +352,11 @@ extension DisplaysViewModel {
     }
 }
 
-// MARK: - NScreen Extentrion
+// MARK: - NSScreen Extension
 
 extension NSScreen {
     var displayID: CGDirectDisplayID {
         let key = NSDeviceDescriptionKey("NSScreenNumber")
-        return deviceDescription[key] as! CGDirectDisplayID
+        return (deviceDescription[key] as? CGDirectDisplayID) ?? 0
     }
 }

@@ -1,10 +1,4 @@
-//
-//  DisplayInfoModel.swift
-//  BlackoutTest
-
-
 import SwiftUI
-import CoreGraphics
 
 enum DisplayState {
     case mirrored
@@ -26,11 +20,7 @@ class DisplayInfo: ObservableObject, Identifiable, Hashable {
     let id: CGDirectDisplayID
     let name: String
     var isPrimary: Bool
-    @Published var state: DisplayState {
-        didSet {
-            print("Display '\(name)' changed state to '\(state)'")
-        }
-    }
+    @Published var state: DisplayState
     var mirroredTo: [DisplayInfo] = []
     var mirrorSource: DisplayInfo?
 

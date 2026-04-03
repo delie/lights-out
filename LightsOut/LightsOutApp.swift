@@ -29,7 +29,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Set up the status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(named: "menubarIcon")
+            button.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "LightsOut")
             button.action = #selector(handleClick(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
