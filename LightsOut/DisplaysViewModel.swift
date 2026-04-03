@@ -9,37 +9,69 @@ import SwiftUI
 func CGSConfigureDisplayEnabled(_ cid: CGDisplayConfigRef, _ display: UInt32, _ enabled: Bool) -> Int
 
 class DisplaysViewModel: ObservableObject {
+    private enum PersistenceKeys {
+        static let disconnectedDisplayIDs = "DisconnectedDisplayIDs"
+    }
+
     @Published var displays: [DisplayInfo] = []
     private var gammaService = GammaUpdateService()
     private var arrengementCache = DisplayArrangementCacheService()
+    private let defaults: UserDefaults
     
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        fetchDisplays()
+    }
+
+    func recoverDisplaysAfterLaunch() {
+        fetchDisplays()
+        applyPersistedDisconnectedDisplaysIfPossible()
         fetchDisplays()
     }
     
     func fetchDisplays() {
         print("Fetching displays.")
-        var displayCount: UInt32 = 0
-        CGGetActiveDisplayList(0, nil, &displayCount)
-        var activeDisplays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
-        CGGetActiveDisplayList(displayCount, &activeDisplays, &displayCount)
+        var activeDisplayCount: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &activeDisplayCount)
+        var activeDisplays = [CGDirectDisplayID](repeating: 0, count: Int(activeDisplayCount))
+        CGGetActiveDisplayList(activeDisplayCount, &activeDisplays, &activeDisplayCount)
+
+        var onlineDisplayCount: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &onlineDisplayCount)
+        var onlineDisplays = [CGDirectDisplayID](repeating: 0, count: Int(onlineDisplayCount))
+        CGGetOnlineDisplayList(onlineDisplayCount, &onlineDisplays, &onlineDisplayCount)
         
         var new_displays: Set<DisplayInfo> = Set()
-        
         let primaryDisplayID = CGMainDisplayID()
+        let activeDisplaySet = Set(activeDisplays.prefix(Int(activeDisplayCount)))
+        let persistedDisconnectedDisplayIDs = loadDisconnectedDisplayIDs()
         
-        new_displays = Set(activeDisplays.compactMap { displayID in
+        new_displays = Set(onlineDisplays.prefix(Int(onlineDisplayCount)).compactMap { displayID in
             var displayName = "Display \(displayID)"
             if let screen = NSScreen.screens.first(where: { $0.displayID == displayID }) {
                 displayName = screen.localizedName
             }
+
+            let state: DisplayState = activeDisplaySet.contains(displayID) ? .active : .disconnected
+
             return DisplayInfo(
                 id: displayID,
                 name: displayName,
-                state: .active,
+                state: state,
                 isPrimary: displayID == primaryDisplayID
             )
         })
+
+        for displayID in persistedDisconnectedDisplayIDs where !new_displays.contains(where: { $0.id == displayID }) {
+            new_displays.insert(
+                DisplayInfo(
+                    id: displayID,
+                    name: "Display \(displayID)",
+                    state: .disconnected,
+                    isPrimary: false
+                )
+            )
+        }
         
         // Ensuring the off/pending displays are not "deleted" - manually adding them to the new list.
         for display in displays {
@@ -65,6 +97,10 @@ class DisplaysViewModel: ObservableObject {
     }
     
     func disconnectDisplay(display: DisplayInfo) throws(DisplayError) {
+        guard canDisable(display: display) else {
+            throw DisplayError(msg: "At least one display must remain enabled.")
+        }
+
         display.state = .pending
         var cid: CGDisplayConfigRef?
         let beginStatus = CGBeginDisplayConfiguration(&cid)
@@ -85,11 +121,16 @@ class DisplaysViewModel: ObservableObject {
         }
         
         display.state = .disconnected
+        persistDisconnected(displayID: display.id)
         unRegisterMirrors(display: display)
     }
 
     
     func disableDisplay(display: DisplayInfo) throws(DisplayError) {
+        guard canDisable(display: display) else {
+            throw DisplayError(msg: "At least one display must remain enabled.")
+        }
+
         display.state = .pending
         
         
@@ -113,12 +154,22 @@ class DisplaysViewModel: ObservableObject {
         }
     }
     
-    func resetAllDisplays() {
+    func resetAllDisplays(clearPersistedState: Bool = true) {
+        let persistedDisconnectedDisplayIDs = loadDisconnectedDisplayIDs()
+
         for display in displays {
             try? turnOnDisplay(display: display)
         }
         CGDisplayRestoreColorSyncSettings()
         CGRestorePermanentDisplayConfiguration()
+
+        if clearPersistedState {
+            defaults.removeObject(forKey: PersistenceKeys.disconnectedDisplayIDs)
+        } else {
+            defaults.set(persistedDisconnectedDisplayIDs.map(Int.init), forKey: PersistenceKeys.disconnectedDisplayIDs)
+        }
+
+        fetchDisplays()
     }
     
     func unRegisterMirrors(display: DisplayInfo) {
@@ -156,6 +207,8 @@ extension DisplaysViewModel {
         }
         
         display.state = .active
+        removePersistedDisconnected(displayID: display.id)
+        fetchDisplays()
     }
     
     fileprivate func enableDisplay(display: DisplayInfo) throws(DisplayError) {
@@ -250,6 +303,59 @@ extension DisplaysViewModel {
     
     private func selectAlternateDisplay(excluding currentDisplayID: CGDirectDisplayID) -> DisplayInfo? {
         return displays.first { $0.id != currentDisplayID && $0.state == .active}
+    }
+
+    private func canDisable(display: DisplayInfo) -> Bool {
+        guard display.state == .active else {
+            return false
+        }
+
+        let activeCount = displays.filter { $0.state == .active }.count
+        return activeCount > 1
+    }
+
+    private func loadDisconnectedDisplayIDs() -> Set<CGDirectDisplayID> {
+        let rawValues = defaults.array(forKey: PersistenceKeys.disconnectedDisplayIDs) as? [Int] ?? []
+        return Set(rawValues.map(CGDirectDisplayID.init))
+    }
+
+    private func persistDisconnected(displayID: CGDirectDisplayID) {
+        var disconnectedDisplayIDs = loadDisconnectedDisplayIDs()
+        disconnectedDisplayIDs.insert(displayID)
+        defaults.set(disconnectedDisplayIDs.map(Int.init), forKey: PersistenceKeys.disconnectedDisplayIDs)
+    }
+
+    private func removePersistedDisconnected(displayID: CGDirectDisplayID) {
+        var disconnectedDisplayIDs = loadDisconnectedDisplayIDs()
+        disconnectedDisplayIDs.remove(displayID)
+        defaults.set(disconnectedDisplayIDs.map(Int.init), forKey: PersistenceKeys.disconnectedDisplayIDs)
+    }
+
+    private func applyPersistedDisconnectedDisplaysIfPossible() {
+        let persistedDisconnectedDisplayIDs = loadDisconnectedDisplayIDs()
+        guard !persistedDisconnectedDisplayIDs.isEmpty else {
+            return
+        }
+
+        let eligibleDisplays = displays.filter {
+            $0.state == .active && persistedDisconnectedDisplayIDs.contains($0.id)
+        }
+
+        let activeCount = displays.filter { $0.state == .active }.count
+
+        guard activeCount - eligibleDisplays.count >= 1 else {
+            resetAllDisplays()
+            return
+        }
+
+        for display in eligibleDisplays {
+            do {
+                try disconnectDisplay(display: display)
+            } catch {
+                resetAllDisplays()
+                return
+            }
+        }
     }
 }
 

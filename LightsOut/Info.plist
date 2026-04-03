@@ -2,17 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
-	<key>SUEnableDownloaderService</key>
-	<true/>
-	<key>SUEnableInstallerLauncherService</key>
-	<true/>
-	<key>SUFeedURL</key>
-	<string>https://alonx2.github.io/LightsOut/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>/m/TNJxWeS/g2eXKGIST0oOxigLT3rNmYDvNL0lul7Y=</string>
-	<key>SUScheduledCheckInterval</key>
-	<integer>3600</integer>
+	<key>LSLatestReleaseAPIURL</key>
+	<string>https://api.github.com/repos/AlonX2/LightsOut/releases/latest</string>
+	<key>LSReleasesPageURL</key>
+	<string>https://github.com/AlonX2/LightsOut/releases</string>
 </dict>
 </plist>

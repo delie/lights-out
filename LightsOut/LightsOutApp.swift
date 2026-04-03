@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import Sparkle
 
 @main
 struct LightsOutApp: App {
@@ -18,17 +17,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var popover: NSPopover!
     var eventMonitor: Any?
     let displaysViewModel = DisplaysViewModel()
-    var updateController: SPUStandardUpdaterController!
+    let appUpdateService = AppUpdateService()
     var contextMenuManager: ContextMenuManager!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         popover = NSPopover()
         popover.behavior = .applicationDefined
+
+        displaysViewModel.recoverDisplaysAfterLaunch()
         
         // Set up the status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(named: "MenubarIcon")
+            button.image = NSImage(named: "menubarIcon")
             button.action = #selector(handleClick(_:))
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
@@ -38,16 +39,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.popover.performClose(nil)
             }
         }
-        
-        updateController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
-        
-//        #if !DEBUG
-        if updateController.updater.automaticallyChecksForUpdates {
-            updateController.updater.checkForUpdatesInBackground()
-        }
-//        #endif
-        
-        contextMenuManager = ContextMenuManager(updateController: updateController.updater, statusItem: statusItem)
+
+        appUpdateService.checkForUpdates()
+        contextMenuManager = ContextMenuManager(updateService: appUpdateService, statusItem: statusItem)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        displaysViewModel.resetAllDisplays(clearPersistedState: false)
     }
 
     @objc func handleClick(_ sender: NSStatusBarButton) {
@@ -63,7 +61,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            let contentView = MenuBarView().environmentObject(displaysViewModel)
+            let contentView = MenuBarView()
+                .environmentObject(displaysViewModel)
+                .environmentObject(appUpdateService)
             popover.contentViewController = NSHostingController(rootView: contentView)
 
             if let button = statusItem.button {
@@ -87,4 +87,5 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 #Preview {
     MenuBarView()
         .environmentObject(DisplaysViewModel())
+        .environmentObject(AppUpdateService())
 }

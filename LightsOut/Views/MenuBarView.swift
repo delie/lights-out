@@ -7,6 +7,7 @@ import LaunchAtLogin
 
 struct MenuBarView: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
+    @EnvironmentObject var updateService: AppUpdateService
     @State private var isLoading: Bool = false
     @State private var isSpinning: Bool = false
     @State private var cachedHeight: CGFloat = 200
@@ -20,6 +21,7 @@ struct MenuBarView: View {
             } else {
                 ContentView(isLoading: $isLoading)
                     .environmentObject(viewModel)
+                    .environmentObject(updateService)
                     .background(
                         GeometryReader { geometry in
                             Color("Background")
@@ -54,6 +56,7 @@ struct MenuBarView: View {
 
 struct ContentView: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
+    @EnvironmentObject var updateService: AppUpdateService
     @Binding var isLoading: Bool
     @State private var isShiftPressed = false
 
@@ -61,6 +64,7 @@ struct ContentView: View {
         VStack(spacing: 16) {
             // Header Section
             MenuBarHeader(isLoading: $isLoading)
+                .environmentObject(updateService)
                 .frame(maxWidth: .infinity, alignment: .leading) // Ensure full width
 
             // Display List Section

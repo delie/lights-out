@@ -47,6 +47,8 @@ struct MenuBarHeader: View {
     @Binding var isLoading: Bool
     @State private var randomText: String = texts.randomElement()!
     @EnvironmentObject var viewModel: DisplaysViewModel
+    @EnvironmentObject var updateService: AppUpdateService
+    @Environment(\.openURL) private var openURL
     @State private var showResetPopup: Bool = false
 
     var body: some View {
@@ -61,10 +63,12 @@ struct MenuBarHeader: View {
                     .onAppear {
                         randomText = texts.randomElement()!
                     }
+
+                updateStatusView
             }
             Spacer()
             VStack(spacing: 4) {
-                Image("MenubarIcon")
+                Image("menubarIcon")
                     .resizable()
                     .scaledToFit()
                     .frame(width: 43, height: 43)
@@ -116,6 +120,33 @@ struct MenuBarHeader: View {
                 }
             }
         )
+    }
+
+    @ViewBuilder
+    private var updateStatusView: some View {
+        switch updateService.status {
+        case .idle:
+            EmptyView()
+        case .checking:
+            Text("Checking GitHub for new releases...")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(Color("AppBlue"))
+        case let .upToDate(currentVersion):
+            Text("Version \(currentVersion) is current.")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(Color("AppGreen"))
+        case let .updateAvailable(_, latestVersion, releaseURL):
+            Button("Version \(latestVersion) is available") {
+                openURL(releaseURL)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundColor(Color("AppBlue"))
+        case let .unavailable(message):
+            Text(message)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(Color("AppRed"))
+        }
     }
 
 }
