@@ -118,3 +118,11 @@ struct MenuBarHeader: View {
         return "\(count) displays available"
     }
 }
+
+#Preview {
+    MenuBarHeader(isLoading: .constant(false))
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(AppUpdateService())
+        .frame(width: 372)
+        .padding()
+}

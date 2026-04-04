@@ -24,3 +24,11 @@ struct LoadingView: View {
         .padding(8)
     }
 }
+
+#Preview {
+    LoadingView(
+        cachedHeight: .constant(200),
+        cachedWidth: .constant(200),
+        isSpinning: .constant(true)
+    )
+}

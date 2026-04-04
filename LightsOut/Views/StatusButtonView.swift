@@ -6,61 +6,30 @@ struct StatusButton: View {
     @EnvironmentObject var errorHandler: ErrorHandler
     
     @State private var isAnimating = false
-    private var statusText: String {
-        switch display.state {
-        case .mirrored:
-            return "Turn On"
-        case .disconnected:
-            return "Turn On"
-        case .active:
-            return "Turn Off"
-        case .pending:
-            return "Pending"
-        }
+
+    private var isOn: Bool {
+        display.state == .active
     }
 
     var body: some View {
-        Group {
-            if display.state == .active {
-                actionButton
-                    .buttonStyle(.bordered)
-            } else {
-                actionButton
-                    .buttonStyle(.borderedProminent)
-            }
+        Button(action: handlePress) {
+            Image(systemName: display.state == .pending ? "ellipsis" : "power")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isOn ? .white : .secondary)
+                .frame(width: 28, height: 28)
+                .background(
+                    Circle()
+                        .fill(isOn ? Color.accentColor : Color.clear)
+                )
+                .opacity(display.state == .pending && isAnimating ? 0.4 : 1.0)
         }
-        .controlSize(.small)
+        .buttonStyle(.plain)
         .disabled(display.state == .pending)
         .onAppear {
             guard display.state == .pending else { return }
             withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
                 isAnimating.toggle()
             }
-        }
-    }
-
-    private var actionButton: some View {
-        Button(action: handlePress) {
-            HStack(spacing: 6) {
-                Image(systemName: statusIcon)
-                    .font(.caption)
-
-                Text(statusText)
-                    .font(.system(size: 12))
-            }
-        }
-    }
-
-    private var statusIcon: String {
-        switch display.state {
-        case .mirrored:
-            return "power"
-        case .disconnected:
-            return "power"
-        case .active:
-            return "display.slash"
-        case .pending:
-            return isAnimating ? "ellipsis.circle.fill" : "ellipsis.circle"
         }
     }
 
@@ -99,4 +68,18 @@ struct StatusButton: View {
             errorHandler.handle(error: error)
         }
     }
+}
+
+#Preview("Active") {
+    StatusButton(display: DisplayInfo(id: 1, name: "Display", state: .active, isPrimary: false))
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(ErrorHandler())
+        .padding()
+}
+
+#Preview("Disconnected") {
+    StatusButton(display: DisplayInfo(id: 2, name: "Display", state: .disconnected, isPrimary: false))
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(ErrorHandler())
+        .padding()
 }

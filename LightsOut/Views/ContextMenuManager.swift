@@ -1,8 +1,3 @@
-//
-//  ContextMenuManager.swift
-//  LightsOut
-//
-
 import AppKit
 
 class ContextMenuManager {

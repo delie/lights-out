@@ -1,7 +1,3 @@
-//
-//  AlertView.swift
-//  LightsOut
-
 import SwiftUI
 
 struct CustomUserPrompt: View {
@@ -47,6 +43,16 @@ struct CustomUserPrompt: View {
             .padding(.horizontal, 40)
         }
     }
+}
+
+#Preview {
+    CustomUserPrompt(
+        title: "Enable Launch at Login",
+        message: "Would you like this app to launch automatically when you log in?",
+        primaryButton: ("Yes", {}),
+        secondaryButton: ("No", {})
+    )
+    .frame(width: 372, height: 200)
 }
 
 private struct PromptButtonStyle: ButtonStyle {

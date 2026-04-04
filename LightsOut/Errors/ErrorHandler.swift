@@ -1,7 +1,3 @@
-//
-//  ErrorHandler.swift
-//  LightsOut
-//
 import SwiftUI
 
 class ErrorHandler: ObservableObject {

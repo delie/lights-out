@@ -71,3 +71,16 @@ struct DisplayControlView: View {
         }
     }
 }
+
+#Preview("Display List") {
+    DisplayListView()
+        .environmentObject(DisplaysViewModel())
+        .frame(width: 372)
+}
+
+#Preview("Display Control") {
+    DisplayControlView(display: DisplayInfo(id: 1, name: "LG Ultrafine 5K", state: .active, isPrimary: true))
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(ErrorHandler())
+        .frame(width: 372)
+}

@@ -37,3 +37,13 @@ struct DisplayDetails: View {
         }
     }
 }
+
+#Preview("Active Display") {
+    DisplayDetails(display: DisplayInfo(id: 1, name: "LG Ultrafine 5K", state: .active, isPrimary: true))
+        .padding()
+}
+
+#Preview("Disconnected Display") {
+    DisplayDetails(display: DisplayInfo(id: 2, name: "Dell Monitor", state: .disconnected, isPrimary: false))
+        .padding()
+}

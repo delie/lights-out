@@ -138,3 +138,21 @@ struct FooterText: View {
         }
     }
 }
+
+#Preview("MenuBarView") {
+    MenuBarView()
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(AppUpdateService())
+}
+
+#Preview("ContentView") {
+    ContentView(isLoading: .constant(false))
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(AppUpdateService())
+        .frame(width: 372)
+}
+
+#Preview("FooterText") {
+    FooterText(isShiftPressed: .constant(false))
+        .padding()
+}
