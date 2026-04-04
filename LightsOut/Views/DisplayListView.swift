@@ -20,18 +20,11 @@ struct DisplayListView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(viewModel.displays.enumerated()), id: \.element.id) { index, display in
+                VStack(spacing: 2) {
+                    ForEach(viewModel.displays) { display in
                         DisplayControlView(display: display)
-                            .environmentObject(viewModel)
-
-                        if index < viewModel.displays.count - 1 {
-                            Divider()
-                                .padding(.leading, 32)
-                        }
                     }
                 }
-                .background(Color.black.opacity(0.0001))
             }
         }
     }
@@ -39,35 +32,98 @@ struct DisplayListView: View {
 
 struct DisplayControlView: View {
     @ObservedObject var display: DisplayInfo
+    @EnvironmentObject var viewModel: DisplaysViewModel
+    @EnvironmentObject var errorHandler: ErrorHandler
+
+    @State private var isHovered = false
+    @State private var isAnimating = false
+
+    private var isOn: Bool {
+        display.state == .active
+    }
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: displayIcon)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .frame(width: 20, height: 20)
+            Image(systemName: display.state == .pending ? "ellipsis" : "power")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isOn ? .white : .secondary)
+                .frame(width: 24, height: 24)
+                .background(
+                    Circle()
+                        .fill(isOn ? Color.accentColor : Color.white.opacity(0.06))
+                )
+                .opacity(display.state == .pending && isAnimating ? 0.4 : 1.0)
 
             VStack(alignment: .leading, spacing: 1) {
-                DisplayDetails(display: display)
+                Text(display.name)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(isOn ? .primary : .secondary)
+
+                HStack(spacing: 6) {
+                    if display.isPrimary {
+                        Text("Primary")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text(statusLabel)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
+
             Spacer(minLength: 12)
-            StatusButton(display: display)
-                .withErrorHandling()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isHovered ? Color.white.opacity(0.1) : Color.clear)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onTapGesture {
+            handlePress()
+        }
+        .disabled(display.state == .pending)
+        .onAppear {
+            guard display.state == .pending else { return }
+            withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                isAnimating.toggle()
+            }
+        }
     }
 
-    private var displayIcon: String {
+    private func handlePress() {
+        if display.state == .pending { return }
+
+        let shiftPressed = NSEvent.modifierFlags.contains(.shift)
+
+        do {
+            if display.state.isOff() {
+                try viewModel.turnOnDisplay(display: display)
+            } else if shiftPressed {
+                try viewModel.disableDisplay(display: display)
+            } else {
+                try viewModel.disconnectDisplay(display: display)
+            }
+        } catch {
+            errorHandler.handle(error: error)
+        }
+    }
+
+    private var statusLabel: String {
         switch display.state {
         case .mirrored:
-            return "square.on.square"
+            return "Mirror-disabled"
         case .disconnected:
-            return "display.slash"
+            return "Disconnected"
         case .active:
-            return "display"
+            return "Available"
         case .pending:
-            return "ellipsis.circle"
+            return "Applying change"
         }
     }
 }
@@ -77,11 +133,21 @@ struct DisplayControlView: View {
         .environmentObject(DisplaysViewModel())
         .environmentObject(ErrorHandler())
         .frame(width: 372)
+        .padding()
 }
 
-#Preview("Display Control") {
+#Preview("Display Control — Active") {
     DisplayControlView(display: DisplayInfo(id: 1, name: "LG Ultrafine 5K", state: .active, isPrimary: true))
         .environmentObject(DisplaysViewModel())
         .environmentObject(ErrorHandler())
         .frame(width: 372)
+        .padding()
+}
+
+#Preview("Display Control — Disconnected") {
+    DisplayControlView(display: DisplayInfo(id: 2, name: "Dell U2723QE", state: .disconnected, isPrimary: false))
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(ErrorHandler())
+        .frame(width: 372)
+        .padding()
 }

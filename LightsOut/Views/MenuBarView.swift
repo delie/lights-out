@@ -85,7 +85,7 @@ struct Footer: View {
                 Spacer(minLength: 0)
                                 
                 Button(action: {
-                    if let url = URL(string: "https://alonx2.github.io/LightsOut/docs/disable-methods.html") {
+                    if let url = URL(string: "https://github.com/delie/lights-out/blob/main/docs/disable-methods.md") {
                         openURL(url)
                     }
                 }) {
