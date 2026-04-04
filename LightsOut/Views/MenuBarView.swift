@@ -3,7 +3,6 @@ import LaunchAtLogin
 
 struct MenuBarView: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
-    @EnvironmentObject var updateService: AppUpdateService
     @State private var isLoading: Bool = false
     @AppStorage("ShowStartupPrompt") private var showStartupPrompt: Bool = true
 
@@ -11,7 +10,6 @@ struct MenuBarView: View {
         ZStack {
             ContentView(isLoading: $isLoading)
                 .environmentObject(viewModel)
-                .environmentObject(updateService)
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.5 : 1.0)
 
@@ -37,14 +35,12 @@ struct MenuBarView: View {
 
 struct ContentView: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
-    @EnvironmentObject var updateService: AppUpdateService
     @Binding var isLoading: Bool
     @State private var isShiftPressed = false
 
     var body: some View {
         VStack(spacing: 0) {
             MenuBarHeader(isLoading: $isLoading)
-                .environmentObject(updateService)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 12)
 
@@ -56,7 +52,7 @@ struct ContentView: View {
 
             Divider()
 
-            FooterText(isShiftPressed: $isShiftPressed)
+            Footer(isShiftPressed: $isShiftPressed)
                 .padding(.top, 10)
         }
         .padding(.horizontal, 14)
@@ -64,50 +60,52 @@ struct ContentView: View {
     }
 }
 
-struct FooterText: View {
+struct Footer: View {
     @Binding var isShiftPressed: Bool
     @State private var eventMonitor: Any?
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "keyboard")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-
-            Text("Hold Shift for mirror-based disable.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-
-            if isShiftPressed {
-                Text("Shift")
-                    .font(.system(size: 11, weight: .medium))
+        VStack(alignment: .trailing, spacing: 10){
+            HStack(spacing: 4) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-
-            Button(action: {
-                if let url = URL(string: "https://alonx2.github.io/LightsOut/docs/disable-methods.html") {
-                    openURL(url)
+                
+                Text("Hold Shift for mirror-based disable.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                
+                if isShiftPressed {
+                    Text("Shift")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
                 }
-            }) {
-                Image(systemName: "questionmark.circle.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                
+                Spacer(minLength: 0)
+                                
+                Button(action: {
+                    if let url = URL(string: "https://alonx2.github.io/LightsOut/docs/disable-methods.html") {
+                        openURL(url)
+                    }
+                }) {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
-        }
-        .onAppear {
-            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                isShiftPressed = event.modifierFlags.contains(.shift)
-                return event
+            .onAppear {
+                eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                    isShiftPressed = event.modifierFlags.contains(.shift)
+                    return event
+                }
             }
-        }
-        .onDisappear {
-            if let monitor = eventMonitor {
-                NSEvent.removeMonitor(monitor)
-                eventMonitor = nil
+            .onDisappear {
+                if let monitor = eventMonitor {
+                    NSEvent.removeMonitor(monitor)
+                    eventMonitor = nil
+                }
             }
         }
     }
@@ -116,17 +114,17 @@ struct FooterText: View {
 #Preview("MenuBarView") {
     MenuBarView()
         .environmentObject(DisplaysViewModel())
-        .environmentObject(AppUpdateService())
+        .environmentObject(ErrorHandler())
 }
 
 #Preview("ContentView") {
     ContentView(isLoading: .constant(false))
         .environmentObject(DisplaysViewModel())
-        .environmentObject(AppUpdateService())
+        .environmentObject(ErrorHandler())
         .frame(width: 372)
 }
 
-#Preview("FooterText") {
-    FooterText(isShiftPressed: .constant(false))
+#Preview("Footer") {
+    Footer(isShiftPressed: .constant(false))
         .padding()
 }

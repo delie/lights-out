@@ -75,6 +75,7 @@ struct DisplayControlView: View {
 #Preview("Display List") {
     DisplayListView()
         .environmentObject(DisplaysViewModel())
+        .environmentObject(ErrorHandler())
         .frame(width: 372)
 }
 

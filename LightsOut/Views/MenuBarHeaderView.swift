@@ -3,11 +3,12 @@ import SwiftUI
 struct MenuBarHeader: View {
     @Binding var isLoading: Bool
     @EnvironmentObject var viewModel: DisplaysViewModel
-    @EnvironmentObject var updateService: AppUpdateService
     @Environment(\.openURL) private var openURL
     @State private var showResetPopup: Bool = false
-
+    
     var body: some View {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: "display.2")
                 .font(.system(size: 18))
@@ -17,6 +18,8 @@ struct MenuBarHeader: View {
                 Text("LightsOut")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
+                
+                Text(version ?? "1")
             }
             Spacer()
 
@@ -84,7 +87,6 @@ struct MenuBarHeader: View {
 #Preview {
     MenuBarHeader(isLoading: .constant(false))
         .environmentObject(DisplaysViewModel())
-        .environmentObject(AppUpdateService())
         .frame(width: 372)
         .padding()
 }

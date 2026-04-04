@@ -17,7 +17,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var popover: NSPopover!
     var eventMonitor: Any?
     let displaysViewModel = DisplaysViewModel()
-    let appUpdateService = AppUpdateService()
     var contextMenuManager: ContextMenuManager!
     
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -34,14 +33,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
+        contextMenuManager = ContextMenuManager(statusItem: statusItem)
+
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             if self?.popover.isShown == true {
                 self?.popover.performClose(nil)
             }
         }
-
-        appUpdateService.checkForUpdates()
-        contextMenuManager = ContextMenuManager(updateService: appUpdateService, statusItem: statusItem)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -63,7 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             let contentView = MenuBarView()
                 .environmentObject(displaysViewModel)
-                .environmentObject(appUpdateService)
+
             popover.contentViewController = NSHostingController(rootView: contentView)
 
             if let button = statusItem.button {
@@ -87,5 +85,4 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 #Preview {
     MenuBarView()
         .environmentObject(DisplaysViewModel())
-        .environmentObject(AppUpdateService())
 }
