@@ -16,4 +16,4 @@ Features:
 - Protects against disabling all monitors
 
 Here's a screenshot:
-![Screenshot](docs/images/example.jpg)
+![Screenshot](docs/images/example.jpg?v=2)
