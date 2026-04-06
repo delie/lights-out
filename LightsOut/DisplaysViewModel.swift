@@ -15,7 +15,7 @@ class DisplaysViewModel: ObservableObject {
     private let defaults: UserDefaults
     private var displayCancellables: Set<AnyCancellable> = []
 
-    /// Called before display configuration changes. Pass the set of display IDs being disabled (empty for enable operations).
+    /// Called before display configuration changes. Pass the set of display IDs being hidden (empty for show operations).
     var willChangeDisplays: ((_ disablingDisplayIDs: Set<CGDirectDisplayID>) -> Void)?
     /// Called after display configuration changes complete.
     var didChangeDisplays: (() -> Void)?
@@ -46,6 +46,7 @@ class DisplaysViewModel: ObservableObject {
             if let screen = NSScreen.screens.first(where: { $0.displayID == displayID }) {
                 displayName = screen.localizedName
             }
+            let isBuiltIn = CGDisplayIsBuiltin(displayID) != 0
 
             let state: DisplayState = activeDisplaySet.contains(displayID) ? .active : .disconnected
 
@@ -60,7 +61,8 @@ class DisplaysViewModel: ObservableObject {
                 id: displayID,
                 name: displayName,
                 state: state,
-                isPrimary: displayID == primaryDisplayID
+                isPrimary: displayID == primaryDisplayID,
+                isBuiltIn: isBuiltIn
             )
         })
 
@@ -89,7 +91,7 @@ class DisplaysViewModel: ObservableObject {
     
     func disconnectDisplay(display: DisplayInfo) throws(DisplayError) {
         guard canDisable(display: display) else {
-            throw DisplayError(msg: "At least one display must remain enabled.")
+            throw DisplayError(msg: "At least one display must remain visible.")
         }
 
         display.state = .pending
@@ -105,7 +107,7 @@ class DisplaysViewModel: ObservableObject {
         let status = CGSConfigureDisplayEnabled(config, display.id, false)
         guard status == 0 else {
             CGCancelDisplayConfiguration(config)
-            throw DisplayError(msg: "Failed to disconnect '\(display.name)'.")
+            throw DisplayError(msg: "Failed to hide '\(display.name)'.")
         }
 
         let completeStatus = CGCompleteDisplayConfiguration(config, .forAppOnly)
@@ -189,7 +191,7 @@ extension DisplaysViewModel {
         guard status == 0 else {
             CGCancelDisplayConfiguration(config)
             throw DisplayError(
-                msg: "Failed to reconnect '\(display.name)'."
+                msg: "Failed to show '\(display.name)'."
             )
         }
 
@@ -217,7 +219,7 @@ extension DisplaysViewModel {
         let status = CGSConfigureDisplayEnabled(config, displayID, true)
         guard status == 0 else {
             CGCancelDisplayConfiguration(config)
-            throw DisplayError(msg: "Failed to reconnect display \(displayID).")
+            throw DisplayError(msg: "Failed to show display \(displayID).")
         }
 
         let completeStatus = CGCompleteDisplayConfiguration(config, .forAppOnly)

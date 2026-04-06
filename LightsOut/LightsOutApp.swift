@@ -239,6 +239,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 #Preview {
-    MenuBarView()
+    MenuBarView()   
         .environmentObject(DisplaysViewModel())
 }

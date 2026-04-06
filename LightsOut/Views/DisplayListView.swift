@@ -43,32 +43,30 @@ struct DisplayListView: View {
                     }
 
                     if hasActiveExternals {
-                        DisableExternalsButton()
+                        HideExternalsButton(isEnabled: hasActiveBuiltInDisplay)
                     }
 
                     if hasDisabledExternals {
-                        RestoreExternalsButton()
+                        ShowExternalsButton()
                     }
 
-                    if showsRestoreAllButton && (hasActiveExternals || hasDisabledExternals) {
+                    if hasActiveExternals || hasDisabledExternals {
                         Divider()
                             .padding(.vertical, 6)
                     }
 
-                    if showsRestoreAllButton {
-                        RestoreAllDisplaysButton()
-                    }
+                    ShowAllDisplaysButton(isEnabled: hasDisabledDisplays)
                 }
             }
         }
     }
 
     private var hasActiveExternals: Bool {
-        viewModel.displays.contains { !$0.isPrimary && $0.state == .active }
+        viewModel.displays.contains { !$0.isBuiltIn && $0.state == .active }
     }
 
     private var hasDisabledExternals: Bool {
-        let externals = viewModel.displays.filter { !$0.isPrimary }
+        let externals = viewModel.displays.filter { !$0.isBuiltIn }
         return !externals.isEmpty && externals.allSatisfy { $0.state.isOff() }
     }
 
@@ -76,14 +74,15 @@ struct DisplayListView: View {
         viewModel.displays.contains { $0.state.isOff() }
     }
 
-    private var showsRestoreAllButton: Bool {
-        hasDisabledDisplays
+    private var hasActiveBuiltInDisplay: Bool {
+        viewModel.displays.contains { $0.isBuiltIn && $0.state == .active }
     }
 }
 
-struct DisableExternalsButton: View {
+struct HideExternalsButton: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
     @EnvironmentObject var errorHandler: ErrorHandler
+    let isEnabled: Bool
     @State private var isHovered = false
     @State private var isBusy = false
 
@@ -102,7 +101,7 @@ struct DisableExternalsButton: View {
             }
             .frame(width: 24, height: 24)
 
-            Text("Disable External Displays")
+            Text("Hide External Displays")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.primary)
 
@@ -119,22 +118,23 @@ struct DisableExternalsButton: View {
             isHovered = hovering
         }
         .onTapGesture {
-            disableExternalDisplays()
+            hideExternalDisplays()
         }
-        .disabled(isBusy)
+        .disabled(isBusy || !isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
     }
 
-    private func disableExternalDisplays() {
-        guard !isBusy else { return }
+    private func hideExternalDisplays() {
+        guard !isBusy, isEnabled else { return }
 
-        let primaryIsActive = viewModel.displays.contains { $0.isPrimary && $0.state == .active }
+        let builtInIsActive = viewModel.displays.contains { $0.isBuiltIn && $0.state == .active }
 
-        guard primaryIsActive else {
-            errorHandler.handle(error: DisplayError(msg: "Cannot disable external displays — the primary display is not active."))
+        guard builtInIsActive else {
+            errorHandler.handle(error: DisplayError(msg: "Cannot hide external displays — no built-in display is visible."))
             return
         }
 
-        let externalActive = viewModel.displays.filter { !$0.isPrimary && $0.state == .active }
+        let externalActive = viewModel.displays.filter { !$0.isBuiltIn && $0.state == .active }
 
         guard !externalActive.isEmpty else { return }
 
@@ -163,7 +163,7 @@ struct DisableExternalsButton: View {
     }
 }
 
-struct RestoreExternalsButton: View {
+struct ShowExternalsButton: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
     @EnvironmentObject var errorHandler: ErrorHandler
     @State private var isHovered = false
@@ -184,7 +184,7 @@ struct RestoreExternalsButton: View {
             }
             .frame(width: 24, height: 24)
 
-            Text("Enable External Displays")
+            Text("Show External Displays")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.primary)
 
@@ -201,15 +201,15 @@ struct RestoreExternalsButton: View {
             isHovered = hovering
         }
         .onTapGesture {
-            restoreExternalDisplays()
+            showExternalDisplays()
         }
         .disabled(isBusy)
     }
 
-    private func restoreExternalDisplays() {
+    private func showExternalDisplays() {
         guard !isBusy else { return }
 
-        let externalDisabled = viewModel.displays.filter { !$0.isPrimary && $0.state.isOff() }
+        let externalDisabled = viewModel.displays.filter { !$0.isBuiltIn && $0.state.isOff() }
         guard !externalDisabled.isEmpty else { return }
 
         let busyDisplayIDs = Set(externalDisabled.map(\.id))
@@ -237,8 +237,9 @@ struct RestoreExternalsButton: View {
     }
 }
 
-struct RestoreAllDisplaysButton: View {
+struct ShowAllDisplaysButton: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
+    let isEnabled: Bool
     @State private var isHovered = false
     @State private var isBusy = false
     @State private var showResetPopup = false
@@ -258,7 +259,7 @@ struct RestoreAllDisplaysButton: View {
             }
             .frame(width: 24, height: 24)
 
-            Text("Restore All Displays")
+            Text("Show All Displays")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.primary)
 
@@ -275,15 +276,16 @@ struct RestoreAllDisplaysButton: View {
             isHovered = hovering
         }
         .onTapGesture {
-            restoreAllDisplays()
+            showAllDisplays()
         }
-        .disabled(isBusy)
+        .disabled(isBusy || !isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
         .overlay(alignment: .bottom) {
             if showResetPopup {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.secondary)
-                    Text("Restore All Displays")
+                    Text("Show All Displays")
                         .font(.system(size: 12))
                         .foregroundStyle(.primary)
                 }
@@ -302,8 +304,8 @@ struct RestoreAllDisplaysButton: View {
         }
     }
 
-    private func restoreAllDisplays() {
-        guard !isBusy else { return }
+    private func showAllDisplays() {
+        guard !isBusy, isEnabled else { return }
 
         let busyDisplayIDs = Set(viewModel.displays.map(\.id))
         isBusy = true
@@ -416,9 +418,9 @@ struct DisplayControlView: View {
     private var statusLabel: String {
         switch display.state {
         case .disconnected:
-            return "Disconnected"
+            return "Hidden"
         case .active:
-            return "Available"
+            return "Visible"
         case .pending:
             return "Applying change"
         }
@@ -438,7 +440,7 @@ private func displayError(from error: Error) -> DisplayError {
 }
 
 #Preview("Display Control — Active") {
-    DisplayControlView(display: DisplayInfo(id: 1, name: "LG Ultrafine 5K", state: .active, isPrimary: true))
+    DisplayControlView(display: DisplayInfo(id: 1, name: "LG Ultrafine 5K", state: .active, isPrimary: true, isBuiltIn: false))
         .environmentObject(DisplaysViewModel())
         .environmentObject(ErrorHandler())
         .frame(width: 372)
@@ -446,7 +448,7 @@ private func displayError(from error: Error) -> DisplayError {
 }
 
 #Preview("Display Control — Disconnected") {
-    DisplayControlView(display: DisplayInfo(id: 2, name: "Dell U2723QE", state: .disconnected, isPrimary: false))
+    DisplayControlView(display: DisplayInfo(id: 2, name: "Dell U2723QE", state: .disconnected, isPrimary: false, isBuiltIn: false))
         .environmentObject(DisplaysViewModel())
         .environmentObject(ErrorHandler())
         .frame(width: 372)
