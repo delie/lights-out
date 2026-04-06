@@ -15,6 +15,6 @@ I've only tested in Tahoe v26. It may work in older versions of MacOS, but I've 
 - Optionally runs at login.
 - Tahoe-friendly glass theme
 
-## displayshot
+## Screenshot
 
-![displayshot](docs/images/displayshot.jpg)
+![screenshot](docs/images/screenshot-2.jpg)
