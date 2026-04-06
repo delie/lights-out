@@ -8,13 +8,13 @@ I've only tested in Tahoe v26. It may work in older versions of MacOS, but I've 
 
 ## Features
 
-- Virtually "disconnect" monitors. Particularly handy if you've got multiple devices connected to the same monitor.
+- Virtually "disconnect" displays. Particularly handy if you've got multiple devices connected to the same monitor(s)!
+- MacOS automatically moves application windows to active displays when a screen is disabled.
+- Protects against accidentally disabling all monitors.
+- Reactivates all displays on application exit, as a safety measure.
 - Optionally runs at login.
-- Restores previous settings on start
-- Reactivates all monitors on exit
 - Tahoe-friendly glass theme
-- Protects against disabling all monitors
 
-## Screenshot
+## displayshot
 
-![Screenshot](docs/images/screenshot.jpg)
+![displayshot](docs/images/displayshot.jpg)

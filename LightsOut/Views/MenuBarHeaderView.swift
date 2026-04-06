@@ -3,8 +3,6 @@ import SwiftUI
 struct MenuBarHeader: View {
     @Binding var isLoading: Bool
     @EnvironmentObject var viewModel: DisplaysViewModel
-    @Environment(\.openURL) private var openURL
-    @State private var showResetPopup: Bool = false
     
     var body: some View {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
@@ -42,45 +40,8 @@ struct MenuBarHeader: View {
                 .controlSize(.large)
                 .disabled(isLoading)
                 .help("Refresh displays")
-
-                Button {
-                    viewModel.resetAllDisplays()
-                    showResetPopup = true
-                } label: {
-                    Image(systemName: "power")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.large)
-                .help("Restore all displays")
             }
         }
-        .overlay(
-            Group {
-                if showResetPopup {
-                    VStack {
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                            Text("Restore all displays")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.primary)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .padding(.bottom, 12)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .allowsHitTesting(false)
-                            .onAppear {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                    showResetPopup = false
-                                }
-                            }
-                    }
-                }
-            }
-        )
     }
 }
 

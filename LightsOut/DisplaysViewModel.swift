@@ -7,12 +7,11 @@ func CGSConfigureDisplayEnabled(_ cid: CGDisplayConfigRef, _ display: UInt32, _ 
 
 class DisplaysViewModel: ObservableObject {
     private enum PersistenceKeys {
-        static let disconnectedDisplayIDs = "DisconnectedDisplayIDs"
+        static let disabledDisplayIDsForRecovery = "DisabledDisplayIDsForRecovery"
     }
 
     @Published var displays: [DisplayInfo] = []
-    private var gammaService = GammaUpdateService()
-    private var arrangementCache = DisplayArrangementCacheService()
+    @Published var busyDisplayIDs: Set<CGDirectDisplayID> = []
     private let defaults: UserDefaults
     private var displayCancellables: Set<AnyCancellable> = []
 
@@ -23,12 +22,6 @@ class DisplaysViewModel: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        fetchDisplays()
-    }
-
-    func recoverDisplaysAfterLaunch() {
-        fetchDisplays()
-        applyPersistedDisconnectedDisplaysIfPossible()
         fetchDisplays()
     }
     
@@ -46,8 +39,6 @@ class DisplaysViewModel: ObservableObject {
         var newDisplays: Set<DisplayInfo> = []
         let primaryDisplayID = CGMainDisplayID()
         let activeDisplaySet = Set(activeDisplays.prefix(Int(activeDisplayCount)))
-        let persistedDisconnectedDisplayIDs = loadDisconnectedDisplayIDs()
-
         let existingByID = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
 
         newDisplays = Set(onlineDisplays.prefix(Int(onlineDisplayCount)).compactMap { displayID in
@@ -73,23 +64,6 @@ class DisplaysViewModel: ObservableObject {
             )
         })
 
-        for displayID in persistedDisconnectedDisplayIDs where !newDisplays.contains(where: { $0.id == displayID }) {
-            if let existing = existingByID[displayID] {
-                existing.state = .disconnected
-                existing.isPrimary = false
-                newDisplays.insert(existing)
-            } else {
-                newDisplays.insert(
-                    DisplayInfo(
-                        id: displayID,
-                        name: "Display \(displayID)",
-                        state: .disconnected,
-                        isPrimary: false
-                    )
-                )
-            }
-        }
-
         // Ensuring the off/pending displays are not "deleted" - manually adding them to the new list.
         for display in displays {
             if display.state.isOff() || display.state == .pending {
@@ -111,7 +85,6 @@ class DisplaysViewModel: ObservableObject {
         }
         
         subscribeToDisplayChanges()
-        try? arrangementCache.cache()
     }
     
     func disconnectDisplay(display: DisplayInfo) throws(DisplayError) {
@@ -141,67 +114,49 @@ class DisplaysViewModel: ObservableObject {
         }
 
         display.state = .disconnected
-        persistDisconnected(displayID: display.id)
-        unRegisterMirrors(display: display)
-        didChangeDisplays?()
-    }
-
-    
-    func disableDisplay(display: DisplayInfo) throws(DisplayError) {
-        guard canDisable(display: display) else {
-            throw DisplayError(msg: "At least one display must remain enabled.")
-        }
-
-        display.state = .pending
-        willChangeDisplays?([display.id])
-
-        do {
-            try mirrorDisplay(display)
-            gammaService.setZeroGamma(for: display)
-        } catch {
-            throw DisplayError(msg: "Failed to apply a mirror-based disable to '\(display.name)'.")
-        }
-        unRegisterMirrors(display: display)
+        persistDisabledDisplayIDForRecovery(display.id)
         didChangeDisplays?()
     }
     
     func turnOnDisplay(display: DisplayInfo) throws(DisplayError) {
-        switch display.state {
-        case .disconnected:
+        if display.state == .disconnected {
             try reconnectDisplay(display: display)
-        case .mirrored:
-            try enableDisplay(display: display)
-        default:
-            break
         }
     }
     
-    func resetAllDisplays(clearPersistedState: Bool = true) {
-        let persistedDisconnectedDisplayIDs = loadDisconnectedDisplayIDs()
-
+    func resetAllDisplays() {
         for display in displays {
             try? turnOnDisplay(display: display)
         }
         CGDisplayRestoreColorSyncSettings()
         CGRestorePermanentDisplayConfiguration()
-
-        if clearPersistedState {
-            defaults.removeObject(forKey: PersistenceKeys.disconnectedDisplayIDs)
-        } else {
-            defaults.set(persistedDisconnectedDisplayIDs.map(Int.init), forKey: PersistenceKeys.disconnectedDisplayIDs)
-        }
+        clearDisabledDisplayIDsForRecovery()
 
         fetchDisplays()
     }
-    
-    func unRegisterMirrors(display: DisplayInfo) {
-        for mirror in display.mirroredTo {
-            mirror.state = .active
-        }
-    }
 
+    func recoverDisabledDisplaysFromPreviousSessionIfNeeded() {
+        let disabledDisplayIDs = loadDisabledDisplayIDsForRecovery()
+        guard !disabledDisplayIDs.isEmpty else { return }
+
+        for displayID in disabledDisplayIDs {
+            try? reconnectDisplay(displayID: displayID)
+        }
+
+        clearDisabledDisplayIDsForRecovery()
+        fetchDisplays()
+    }
+    
     func notifyChange() {
         displays = displays
+    }
+
+    func markDisplaysBusy(_ displayIDs: Set<CGDirectDisplayID>) {
+        busyDisplayIDs.formUnion(displayIDs)
+    }
+
+    func clearDisplaysBusy(_ displayIDs: Set<CGDirectDisplayID>) {
+        busyDisplayIDs.subtract(displayIDs)
     }
 
     private func subscribeToDisplayChanges() {
@@ -217,8 +172,6 @@ class DisplaysViewModel: ObservableObject {
         }
     }
 }
-
-// MARK: - TurnOn logic
 
 extension DisplaysViewModel {
     fileprivate func reconnectDisplay(display: DisplayInfo) throws(DisplayError) {
@@ -247,104 +200,33 @@ extension DisplaysViewModel {
         }
 
         display.state = .active
-        removePersistedDisconnected(displayID: display.id)
+        removeDisabledDisplayIDForRecovery(display.id)
         didChangeDisplays?()
         fetchDisplays()
     }
 
-    fileprivate func enableDisplay(display: DisplayInfo) throws(DisplayError) {
+    fileprivate func reconnectDisplay(displayID: CGDirectDisplayID) throws {
         willChangeDisplays?([])
 
-        gammaService.restoreGamma(for: display)
-
-        do {
-            try unmirrorDisplay(display)
-            try arrangementCache.restore()
-        } catch {
-            throw DisplayError(
-                msg: "Failed to enable '\(display.name)'."
-            )
+        var cid: CGDisplayConfigRef?
+        let beginStatus = CGBeginDisplayConfiguration(&cid)
+        guard beginStatus == .success, let config = cid else {
+            throw DisplayError(msg: "Failed to begin configuration for display \(displayID).")
         }
 
-        display.state = .active
+        let status = CGSConfigureDisplayEnabled(config, displayID, true)
+        guard status == 0 else {
+            CGCancelDisplayConfiguration(config)
+            throw DisplayError(msg: "Failed to reconnect display \(displayID).")
+        }
+
+        let completeStatus = CGCompleteDisplayConfiguration(config, .forAppOnly)
+        guard completeStatus == .success else {
+            throw DisplayError(msg: "Failed to complete configuration for display \(displayID).")
+        }
+
+        removeDisabledDisplayIDForRecovery(displayID)
         didChangeDisplays?()
-    }
-}
-
-// MARK: - Mirroring Extension
-
-extension DisplaysViewModel {
-    fileprivate func mirrorDisplay(_ display: DisplayInfo) throws {
-        let targetDisplayID = display.id
-        
-        guard let alternateDisplay = selectAlternateDisplay(excluding: targetDisplayID) else {
-            throw DisplayError(msg: "No suitable alternate display found for mirroring.")
-        }
-        
-        var configRef: CGDisplayConfigRef?
-        let beginConfigError = CGBeginDisplayConfiguration(&configRef)
-        guard beginConfigError == .success, let config = configRef else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(beginConfigError.rawValue), userInfo: [
-                NSLocalizedDescriptionKey: "Failed to begin display configuration."
-            ])
-        }
-        
-        let mirrorError = CGConfigureDisplayMirrorOfDisplay(config, targetDisplayID, alternateDisplay.id)
-        guard mirrorError == .success else {
-            CGCancelDisplayConfiguration(config)
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(mirrorError.rawValue), userInfo: [
-                NSLocalizedDescriptionKey: "Failed to mirror display \(alternateDisplay.name) to display \(display.name)."
-            ])
-        }
-        
-        let completeConfigError = CGCompleteDisplayConfiguration(config, .forAppOnly)
-        guard completeConfigError == .success else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(completeConfigError.rawValue), userInfo: [
-                NSLocalizedDescriptionKey: "Failed to complete display configuration."
-            ])
-        }
-        
-        alternateDisplay.mirroredTo.append(display)
-    }
-    
-    fileprivate func unmirrorDisplay(_ display: DisplayInfo) throws {
-        var configRef: CGDisplayConfigRef?
-        let beginConfigError = CGBeginDisplayConfiguration(&configRef)
-        guard beginConfigError == .success, let config = configRef else {
-            throw NSError(
-                domain: NSOSStatusErrorDomain,
-                code: Int(beginConfigError.rawValue),
-                userInfo: [NSLocalizedDescriptionKey: "Failed to begin display configuration."]
-            )
-        }
-
-        let unmirrorError = CGConfigureDisplayMirrorOfDisplay(config, display.id, kCGNullDirectDisplay)
-        guard unmirrorError == .success else {
-            CGCancelDisplayConfiguration(config)
-            throw NSError(
-                domain: NSOSStatusErrorDomain,
-                code: Int(unmirrorError.rawValue),
-                userInfo: [NSLocalizedDescriptionKey: "Failed to unmirror display \(display.name)."]
-            )
-        }
-
-        let completeConfigError = CGCompleteDisplayConfiguration(config, .forAppOnly)
-        guard completeConfigError == .success else {
-            throw NSError(
-                domain: NSOSStatusErrorDomain,
-                code: Int(completeConfigError.rawValue),
-                userInfo: [NSLocalizedDescriptionKey: "Failed to complete display configuration."]
-            )
-        }
-
-        if let source = display.mirrorSource,
-           let index = source.mirroredTo.firstIndex(of: display) {
-            source.mirroredTo.remove(at: index)
-        }
-    }
-    
-    private func selectAlternateDisplay(excluding currentDisplayID: CGDirectDisplayID) -> DisplayInfo? {
-        return displays.first { $0.id != currentDisplayID && $0.state == .active}
     }
 
     private func canDisable(display: DisplayInfo) -> Bool {
@@ -356,49 +238,27 @@ extension DisplaysViewModel {
         return activeCount > 1
     }
 
-    private func loadDisconnectedDisplayIDs() -> Set<CGDirectDisplayID> {
-        let rawValues = defaults.array(forKey: PersistenceKeys.disconnectedDisplayIDs) as? [Int] ?? []
+    private func loadDisabledDisplayIDsForRecovery() -> Set<CGDirectDisplayID> {
+        let rawValues = defaults.array(forKey: PersistenceKeys.disabledDisplayIDsForRecovery) as? [Int] ?? []
         return Set(rawValues.map(CGDirectDisplayID.init))
     }
 
-    private func persistDisconnected(displayID: CGDirectDisplayID) {
-        var disconnectedDisplayIDs = loadDisconnectedDisplayIDs()
-        disconnectedDisplayIDs.insert(displayID)
-        defaults.set(disconnectedDisplayIDs.map(Int.init), forKey: PersistenceKeys.disconnectedDisplayIDs)
+    private func persistDisabledDisplayIDForRecovery(_ displayID: CGDirectDisplayID) {
+        var disabledDisplayIDs = loadDisabledDisplayIDsForRecovery()
+        disabledDisplayIDs.insert(displayID)
+        defaults.set(disabledDisplayIDs.map(Int.init), forKey: PersistenceKeys.disabledDisplayIDsForRecovery)
     }
 
-    private func removePersistedDisconnected(displayID: CGDirectDisplayID) {
-        var disconnectedDisplayIDs = loadDisconnectedDisplayIDs()
-        disconnectedDisplayIDs.remove(displayID)
-        defaults.set(disconnectedDisplayIDs.map(Int.init), forKey: PersistenceKeys.disconnectedDisplayIDs)
+    private func removeDisabledDisplayIDForRecovery(_ displayID: CGDirectDisplayID) {
+        var disabledDisplayIDs = loadDisabledDisplayIDsForRecovery()
+        disabledDisplayIDs.remove(displayID)
+        defaults.set(disabledDisplayIDs.map(Int.init), forKey: PersistenceKeys.disabledDisplayIDsForRecovery)
     }
 
-    private func applyPersistedDisconnectedDisplaysIfPossible() {
-        let persistedDisconnectedDisplayIDs = loadDisconnectedDisplayIDs()
-        guard !persistedDisconnectedDisplayIDs.isEmpty else {
-            return
-        }
-
-        let eligibleDisplays = displays.filter {
-            $0.state == .active && persistedDisconnectedDisplayIDs.contains($0.id)
-        }
-
-        let activeCount = displays.filter { $0.state == .active }.count
-
-        guard activeCount - eligibleDisplays.count >= 1 else {
-            resetAllDisplays()
-            return
-        }
-
-        for display in eligibleDisplays {
-            do {
-                try disconnectDisplay(display: display)
-            } catch {
-                resetAllDisplays()
-                return
-            }
-        }
+    private func clearDisabledDisplayIDsForRecovery() {
+        defaults.removeObject(forKey: PersistenceKeys.disabledDisplayIDsForRecovery)
     }
+
 }
 
 // MARK: - NSScreen Extension

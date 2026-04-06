@@ -32,8 +32,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        displaysViewModel.recoverDisplaysAfterLaunch()
-        
         // Set up the status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -68,10 +66,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.restorePopoverPositionIfNeeded()
             }
         }
+
+        displaysViewModel.recoverDisabledDisplaysFromPreviousSessionIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        displaysViewModel.resetAllDisplays(clearPersistedState: false)
+        displaysViewModel.resetAllDisplays()
     }
 
     @objc func handleClick(_ sender: NSStatusBarButton) {

@@ -1,14 +1,13 @@
 import SwiftUI
 
 enum DisplayState {
-    case mirrored
     case disconnected
     case pending
     case active
     
     func isOff() -> Bool {
         switch self {
-        case .mirrored, .disconnected:
+        case .disconnected:
             return true
         default:
             return false
@@ -21,8 +20,6 @@ class DisplayInfo: ObservableObject, Identifiable, Hashable {
     let name: String
     var isPrimary: Bool
     @Published var state: DisplayState
-    var mirroredTo: [DisplayInfo] = []
-    var mirrorSource: DisplayInfo?
 
     init(id: CGDirectDisplayID, name: String, state: DisplayState, isPrimary: Bool) {
         self.id = id

@@ -57,7 +57,6 @@ struct MenuBarView: View {
 struct ContentView: View {
     @EnvironmentObject var viewModel: DisplaysViewModel
     @Binding var isLoading: Bool
-    @State private var isShiftPressed = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -70,65 +69,9 @@ struct ContentView: View {
             DisplayListView()
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
-
-            Divider()
-
-            Footer(isShiftPressed: $isShiftPressed)
-                .padding(.top, 10)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 14)
-    }
-}
 
-struct Footer: View {
-    @Binding var isShiftPressed: Bool
-    @State private var eventMonitor: Any?
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 10){
-            HStack(spacing: 4) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                
-                Text("Hold Shift for mirror-based disable.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                
-                if isShiftPressed {
-                    Text("Shift")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                
-                Spacer(minLength: 0)
-                                
-                Button(action: {
-                    if let url = URL(string: "https://github.com/delie/lights-out/blob/main/docs/disable-methods.md") {
-                        openURL(url)
-                    }
-                }) {
-                    Image(systemName: "questionmark.circle.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            .onAppear {
-                eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-                    isShiftPressed = event.modifierFlags.contains(.shift)
-                    return event
-                }
-            }
-            .onDisappear {
-                if let monitor = eventMonitor {
-                    NSEvent.removeMonitor(monitor)
-                    eventMonitor = nil
-                }
-            }
-        }
     }
 }
 
@@ -143,9 +86,4 @@ struct Footer: View {
         .environmentObject(DisplaysViewModel())
         .environmentObject(ErrorHandler())
         .frame(width: 372)
-}
-
-#Preview("Footer") {
-    Footer(isShiftPressed: .constant(false))
-        .padding()
 }
