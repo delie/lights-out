@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
 
+private final class MenuPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 @main
 struct LightsOutApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -14,17 +19,19 @@ struct LightsOutApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
-    var popover: NSPopover!
+    private var menuPanel: MenuPanel?
     var eventMonitor: Any?
+    var screenParametersObserver: Any?
     let displaysViewModel = DisplaysViewModel()
     var contextMenuManager: ContextMenuManager!
-    var popoverDisplayID: CGDirectDisplayID?
-    var savedPopoverOffset: NSPoint?  // position relative to the popover's screen origin
+    private var preservedPopoverState: PreservedPopoverState?
+
+    private struct PreservedPopoverState {
+        let displayID: CGDirectDisplayID
+        let originOffset: NSPoint
+    }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        popover = NSPopover()
-        popover.behavior = .applicationDefined
-
         displaysViewModel.recoverDisplaysAfterLaunch()
         
         // Set up the status item
@@ -38,63 +45,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         contextMenuManager = ContextMenuManager(statusItem: statusItem)
 
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            if self?.popover.isShown == true {
-                self?.popover.performClose(nil)
+            if self?.menuPanel?.isVisible == true {
+                self?.closeMenuPanel()
             }
+        }
+
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.restorePopoverPositionIfNeeded()
         }
 
         displaysViewModel.willChangeDisplays = { [weak self] disablingDisplayIDs in
-            guard let self,
-                  self.popover.isShown,
-                  let popoverWindow = self.popover.contentViewController?.view.window,
-                  let screen = popoverWindow.screen else { return }
-            let popoverDisplayID = screen.displayID
-            if !disablingDisplayIDs.isEmpty && disablingDisplayIDs.contains(popoverDisplayID) {
-                // The popover is on a display that's about to be disabled — close it
-                self.popover.performClose(nil)
-                self.popoverDisplayID = nil
-                self.savedPopoverOffset = nil
-            } else {
-                // Save position relative to the screen origin (screen-local coordinates survive global coordinate shifts)
-                self.popoverDisplayID = popoverDisplayID
-                let screenOrigin = screen.frame.origin
-                self.savedPopoverOffset = NSPoint(
-                    x: popoverWindow.frame.origin.x - screenOrigin.x,
-                    y: popoverWindow.frame.origin.y - screenOrigin.y
-                )
-            }
+            self?.preparePopoverForDisplayChange(disablingDisplayIDs: disablingDisplayIDs)
         }
 
         displaysViewModel.didChangeDisplays = { [weak self] in
-            guard let self,
-                  self.popover.isShown,
-                  self.savedPopoverOffset != nil,
-                  self.popoverDisplayID != nil else {
-                self?.popoverDisplayID = nil
-                self?.savedPopoverOffset = nil
-                return
-            }
-            // Defer restoration so it runs after macOS finishes its own window relocation
+            self?.restorePopoverPositionIfNeeded()
             DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      self.popover.isShown,
-                      let savedOffset = self.savedPopoverOffset,
-                      let savedDisplayID = self.popoverDisplayID,
-                      let popoverWindow = self.popover.contentViewController?.view.window,
-                      let screen = NSScreen.screens.first(where: { $0.displayID == savedDisplayID }) else {
-                    self?.popoverDisplayID = nil
-                    self?.savedPopoverOffset = nil
-                    return
-                }
-                // Restore position using the screen's (potentially new) origin + saved offset
-                var frame = popoverWindow.frame
-                frame.origin = NSPoint(
-                    x: screen.frame.origin.x + savedOffset.x,
-                    y: screen.frame.origin.y + savedOffset.y
-                )
-                popoverWindow.setFrame(frame, display: false)
-                self.popoverDisplayID = nil
-                self.savedPopoverOffset = nil
+                self?.restorePopoverPositionIfNeeded()
             }
         }
     }
@@ -108,28 +79,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if event.type == .rightMouseUp {
             contextMenuManager.showContextMenu()
         } else {
-            togglePopover(sender)
+            toggleMenuPanel(sender)
         }
     }
 
-    func togglePopover(_ sender: NSStatusBarButton) {
-        if popover.isShown {
-            popover.performClose(sender)
+    func toggleMenuPanel(_ sender: NSStatusBarButton) {
+        if menuPanel?.isVisible == true {
+            closeMenuPanel()
         } else {
-            let contentView = MenuBarView()
-                .environmentObject(displaysViewModel)
-                .withErrorHandling()
-
-            popover.contentViewController = NSHostingController(rootView: contentView)
-
-            if let button = statusItem.button {
-                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                
-                // Ensure the app and popover window become active
-                NSApp.activate(ignoringOtherApps: true)
-                popover.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
-                popover.contentViewController?.view.window?.makeFirstResponder(popover.contentViewController?.view)
-            }
+            showMenuPanel(anchoredTo: sender)
         }
     }
 
@@ -137,6 +95,146 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+        }
+    }
+
+    private func preparePopoverForDisplayChange(disablingDisplayIDs: Set<CGDirectDisplayID>) {
+        guard let menuPanel,
+              menuPanel.isVisible,
+              let screen = menuPanel.screen else {
+            preservedPopoverState = nil
+            return
+        }
+
+        let displayID = screen.displayID
+        if disablingDisplayIDs.contains(displayID) {
+            closeMenuPanel()
+            preservedPopoverState = nil
+            return
+        }
+
+        preservedPopoverState = PreservedPopoverState(
+            displayID: displayID,
+            originOffset: NSPoint(
+                x: menuPanel.frame.origin.x - screen.frame.origin.x,
+                y: menuPanel.frame.origin.y - screen.frame.origin.y
+            )
+        )
+    }
+
+    private func restorePopoverPositionIfNeeded() {
+        guard let menuPanel,
+              menuPanel.isVisible,
+              let preservedPopoverState,
+              let screen = NSScreen.screens.first(where: { $0.displayID == preservedPopoverState.displayID }) else {
+            self.preservedPopoverState = nil
+            return
+        }
+
+        let desiredOrigin = NSPoint(
+            x: screen.frame.origin.x + preservedPopoverState.originOffset.x,
+            y: screen.frame.origin.y + preservedPopoverState.originOffset.y
+        )
+
+        guard menuPanel.frame.origin != desiredOrigin else { return }
+
+        var frame = menuPanel.frame
+        frame.origin = desiredOrigin
+        menuPanel.setFrame(frame, display: false)
+        menuPanel.orderFrontRegardless()
+    }
+
+    private func showMenuPanel(anchoredTo button: NSStatusBarButton) {
+        let contentView = MenuBarView()
+            .environmentObject(displaysViewModel)
+            .withErrorHandling()
+
+        let hostingController = NSHostingController(rootView: contentView)
+        hostingController.loadView()
+        hostingController.view.layoutSubtreeIfNeeded()
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
+
+        let fittingSize = hostingController.view.fittingSize
+        let panelSize = NSSize(
+            width: max(372, fittingSize.width),
+            height: max(240, fittingSize.height)
+        )
+
+        let panel = MenuPanel(
+            contentRect: NSRect(origin: .zero, size: panelSize),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.hasShadow = true
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        panel.contentViewController = hostingController
+        panel.contentView?.wantsLayer = true
+        panel.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        panel.contentView?.layer?.cornerRadius = 24
+        panel.contentView?.layer?.cornerCurve = .continuous
+        panel.contentView?.layer?.masksToBounds = true
+        panel.invalidateShadow()
+        panel.setFrameOrigin(panelOrigin(for: button, panelSize: panelSize))
+
+        menuPanel = panel
+
+        NSApp.activate(ignoringOtherApps: true)
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        preservedPopoverState = nil
+    }
+
+    private func closeMenuPanel() {
+        menuPanel?.orderOut(nil)
+        menuPanel?.close()
+        menuPanel = nil
+        preservedPopoverState = nil
+    }
+
+    private func panelOrigin(for button: NSStatusBarButton, panelSize: NSSize) -> NSPoint {
+        let mouseLocation = NSEvent.mouseLocation
+        let fallbackScreen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) })
+            ?? button.window?.screen
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+
+        let buttonRectOnScreen: NSRect
+        if let window = button.window {
+            let rectInWindow = button.convert(button.bounds, to: nil)
+            buttonRectOnScreen = window.convertToScreen(rectInWindow)
+        } else if let screen = fallbackScreen {
+            let visibleFrame = screen.visibleFrame
+            buttonRectOnScreen = NSRect(
+                x: visibleFrame.midX - 10,
+                y: visibleFrame.maxY - 4,
+                width: 20,
+                height: 4
+            )
+        } else {
+            buttonRectOnScreen = NSRect(x: 0, y: 0, width: 20, height: 4)
+        }
+
+        let screen = fallbackScreen ?? NSScreen.screens.first
+        let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
+        let preferredOrigin = NSPoint(
+            x: buttonRectOnScreen.midX - (panelSize.width / 2),
+            y: buttonRectOnScreen.minY - panelSize.height - 6
+        )
+
+        return NSPoint(
+            x: min(max(preferredOrigin.x, visibleFrame.minX), visibleFrame.maxX - panelSize.width),
+            y: min(max(preferredOrigin.y, visibleFrame.minY), visibleFrame.maxY - panelSize.height)
+        )
     }
 }
 
