@@ -17,4 +17,4 @@ I've only tested in Tahoe v26. It may work in older versions of MacOS, but I've 
 
 ## Screenshot
 
-![screenshot](docs/images/screenshot-2.jpg)
+![screenshot](docs/images/screenshot-4.jpg)
