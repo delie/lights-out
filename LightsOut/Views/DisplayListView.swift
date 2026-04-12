@@ -7,9 +7,22 @@ struct DisplayListView: View {
 
     var body: some View {
         Group {
-            if viewModel.displays.isEmpty {
+            if viewModel.displays.isEmpty && !viewModel.hasCompletedInitialRefresh {
+                VStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+
+                    Text("Loading Displays")
+                        .font(.headline)
+
+                    Text("Checking connected displays...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 120)
+            } else if viewModel.displays.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "display.slash")
+                    Image(systemName: "display")
                         .font(.title2)
                         .foregroundStyle(.secondary)
 
@@ -331,7 +344,7 @@ struct DisplayControlView: View {
     @State private var isBusy = false
 
     private var isOn: Bool {
-        display.state == .active
+        display.state == .active && display.isAvailable
     }
 
     var body: some View {
@@ -392,7 +405,16 @@ struct DisplayControlView: View {
     private func handlePress() {
         if display.state == .pending || isBusy { return }
 
+        let canAttemptRecoveryWhileHidden = display.state.isOff() && display.isUserHidden
+
+        guard display.isAvailable || !display.state.isOff() || canAttemptRecoveryWhileHidden else {
+            errorHandler.handle(error: DisplayError(msg: "Display '\(display.name)' is no longer available."))
+            viewModel.fetchDisplays()
+            return
+        }
+
         let isEnablingDisplay = display.state.isOff()
+        let isReactivatingHiddenUnavailableDisplay = display.state.isOff() && display.isUserHidden && !display.isAvailable
         isBusy = true
         viewModel.markDisplaysBusy([display.id])
 
@@ -400,6 +422,12 @@ struct DisplayControlView: View {
             do {
                 if display.state.isOff() {
                     try viewModel.turnOnDisplay(display: display)
+                    if isReactivatingHiddenUnavailableDisplay {
+                        errorHandler.inform(
+                            title: "Display Reactivation Pending",
+                            message: "LightsOut will show '\(display.name)' again when it becomes available on the expected input."
+                        )
+                    }
                 } else {
                     try viewModel.disconnectDisplay(display: display)
                 }
@@ -416,6 +444,10 @@ struct DisplayControlView: View {
     }
 
     private var statusLabel: String {
+        if !display.isAvailable {
+            return "Unavailable"
+        }
+
         switch display.state {
         case .disconnected:
             return "Hidden"
@@ -449,6 +481,14 @@ private func displayError(from error: Error) -> DisplayError {
 
 #Preview("Display Control — Disconnected") {
     DisplayControlView(display: DisplayInfo(id: 2, name: "Dell U2723QE", state: .disconnected, isPrimary: false, isBuiltIn: false))
+        .environmentObject(DisplaysViewModel())
+        .environmentObject(ErrorHandler())
+        .frame(width: 372)
+        .padding()
+}
+
+#Preview("Display Control — Unavailable") {
+    DisplayControlView(display: DisplayInfo(id: 3, name: "Studio Display", state: .disconnected, isPrimary: false, isBuiltIn: false, isUserHidden: true, isAvailable: false))
         .environmentObject(DisplaysViewModel())
         .environmentObject(ErrorHandler())
         .frame(width: 372)

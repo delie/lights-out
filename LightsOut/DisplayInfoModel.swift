@@ -20,14 +20,26 @@ class DisplayInfo: ObservableObject, Identifiable, Hashable {
     let name: String
     var isPrimary: Bool
     let isBuiltIn: Bool
+    @Published var isUserHidden: Bool
+    @Published var isAvailable: Bool
     @Published var state: DisplayState
 
-    init(id: CGDirectDisplayID, name: String, state: DisplayState, isPrimary: Bool, isBuiltIn: Bool) {
+    init(
+        id: CGDirectDisplayID,
+        name: String,
+        state: DisplayState,
+        isPrimary: Bool,
+        isBuiltIn: Bool,
+        isUserHidden: Bool = false,
+        isAvailable: Bool = true
+    ) {
         self.id = id
         self.name = name
         self.state = state
         self.isPrimary = isPrimary
         self.isBuiltIn = isBuiltIn
+        self.isUserHidden = isUserHidden
+        self.isAvailable = isAvailable
     }
     
     func hash(into hasher: inout Hasher) {

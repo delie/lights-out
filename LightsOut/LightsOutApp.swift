@@ -1,5 +1,6 @@
-import SwiftUI
 import AppKit
+import CoreGraphics
+import SwiftUI
 
 private final class MenuPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -20,19 +21,20 @@ struct LightsOutApp: App {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     private var menuPanel: MenuPanel?
+    private var menuRefreshTimer: Timer?
     var eventMonitor: Any?
     var screenParametersObserver: Any?
     let displaysViewModel = DisplaysViewModel()
     var contextMenuManager: ContextMenuManager!
     private var preservedPopoverState: PreservedPopoverState?
+    private let menuRefreshInterval: TimeInterval = 3
 
     private struct PreservedPopoverState {
         let displayID: CGDirectDisplayID
         let originOffset: NSPoint
     }
-    
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Set up the status item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "LightsOut")
@@ -53,7 +55,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.restorePopoverPositionIfNeeded()
+            guard let self else { return }
+            guard self.displaysViewModel.busyDisplayIDs.isEmpty else { return }
+            self.displaysViewModel.fetchDisplays()
+            self.restorePopoverPositionIfNeeded()
         }
 
         displaysViewModel.willChangeDisplays = { [weak self] disablingDisplayIDs in
@@ -92,6 +97,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     deinit {
+        stopMenuRefreshTimer()
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
         }
@@ -171,7 +177,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
-        panel.hasShadow = true
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
@@ -192,13 +197,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.orderFrontRegardless()
         panel.makeKey()
         preservedPopoverState = nil
+        startMenuRefreshTimer()
+        DispatchQueue.main.async { [weak self] in
+            self?.displaysViewModel.fetchDisplays()
+        }
     }
 
     private func closeMenuPanel() {
+        stopMenuRefreshTimer()
         menuPanel?.orderOut(nil)
         menuPanel?.close()
         menuPanel = nil
         preservedPopoverState = nil
+    }
+
+    private func startMenuRefreshTimer() {
+        stopMenuRefreshTimer()
+
+        let timer = Timer.scheduledTimer(withTimeInterval: menuRefreshInterval, repeats: true) { [weak self] _ in
+            guard let self, self.menuPanel?.isVisible == true else { return }
+            guard self.displaysViewModel.busyDisplayIDs.isEmpty else { return }
+            self.displaysViewModel.fetchDisplays()
+        }
+        timer.tolerance = 0.5
+        menuRefreshTimer = timer
+    }
+
+    private func stopMenuRefreshTimer() {
+        menuRefreshTimer?.invalidate()
+        menuRefreshTimer = nil
     }
 
     private func panelOrigin(for button: NSStatusBarButton, panelSize: NSSize) -> NSPoint {
@@ -239,6 +266,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 #Preview {
-    MenuBarView()   
+    MenuBarView()
         .environmentObject(DisplaysViewModel())
+        .environmentObject(ErrorHandler())
 }
