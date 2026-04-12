@@ -80,11 +80,11 @@ struct DisplayListView: View {
 
     private var hasDisabledExternals: Bool {
         let externals = viewModel.displays.filter { !$0.isBuiltIn }
-        return !externals.isEmpty && externals.allSatisfy { $0.state.isOff() }
+        return !externals.isEmpty && externals.allSatisfy { $0.state.isOff }
     }
 
     private var hasDisabledDisplays: Bool {
-        viewModel.displays.contains { $0.state.isOff() }
+        viewModel.displays.contains { $0.state.isOff }
     }
 
     private var hasActiveBuiltInDisplay: Bool {
@@ -168,10 +168,8 @@ struct HideExternalsButton: View {
                 }
             }
             viewModel.fetchDisplays()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0) {
-                viewModel.clearDisplaysBusy(busyDisplayIDs)
-                isBusy = false
-            }
+            viewModel.clearDisplaysBusy(busyDisplayIDs)
+            isBusy = false
         }
     }
 }
@@ -222,7 +220,7 @@ struct ShowExternalsButton: View {
     private func showExternalDisplays() {
         guard !isBusy else { return }
 
-        let externalDisabled = viewModel.displays.filter { !$0.isBuiltIn && $0.state.isOff() }
+        let externalDisabled = viewModel.displays.filter { !$0.isBuiltIn && $0.state.isOff }
         guard !externalDisabled.isEmpty else { return }
 
         let busyDisplayIDs = Set(externalDisabled.map(\.id))
@@ -405,22 +403,22 @@ struct DisplayControlView: View {
     private func handlePress() {
         if display.state == .pending || isBusy { return }
 
-        let canAttemptRecoveryWhileHidden = display.state.isOff() && display.isUserHidden
+        let canAttemptRecoveryWhileHidden = display.state.isOff && display.isUserHidden
 
-        guard display.isAvailable || !display.state.isOff() || canAttemptRecoveryWhileHidden else {
+        guard display.isAvailable || !display.state.isOff || canAttemptRecoveryWhileHidden else {
             errorHandler.handle(error: DisplayError(msg: "Display '\(display.name)' is no longer available."))
             viewModel.fetchDisplays()
             return
         }
 
-        let isEnablingDisplay = display.state.isOff()
-        let isReactivatingHiddenUnavailableDisplay = display.state.isOff() && display.isUserHidden && !display.isAvailable
+        let isEnablingDisplay = display.state.isOff
+        let isReactivatingHiddenUnavailableDisplay = display.state.isOff && display.isUserHidden && !display.isAvailable
         isBusy = true
         viewModel.markDisplaysBusy([display.id])
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             do {
-                if display.state.isOff() {
+                if display.state.isOff {
                     try viewModel.turnOnDisplay(display: display)
                     if isReactivatingHiddenUnavailableDisplay {
                         errorHandler.inform(

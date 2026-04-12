@@ -1,6 +1,6 @@
 import Foundation
 
 struct DisplayError: Error, Identifiable {
-    var id: String { UUID().uuidString }
+    let id = UUID()
     var msg: String
 }

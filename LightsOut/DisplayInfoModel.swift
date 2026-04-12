@@ -5,14 +5,7 @@ enum DisplayState {
     case pending
     case active
     
-    func isOff() -> Bool {
-        switch self {
-        case .disconnected:
-            return true
-        default:
-            return false
-        }
-    }
+    var isOff: Bool { self == .disconnected }
 }
 
 class DisplayInfo: ObservableObject, Identifiable, Hashable {

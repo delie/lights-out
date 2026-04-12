@@ -59,7 +59,6 @@ class DisplaysViewModel: ObservableObject {
 #if DEBUG
     private let isVerboseDDCDebugEnabled = ProcessInfo.processInfo.environment["LIGHTSOUT_VERBOSE_DDC_DEBUG"] == "1"
     private var pendingDDCDebugStages: [CGDirectDisplayID: [String]] = [:]
-    private var previousDebugRegistryPropertiesByScope: [String: [String: [String: String]]] = [:]
 #endif
     private let ioAVServiceFunctions: IOAVServiceFunctions? = {
         guard let handle = dlopen("/System/Library/Frameworks/IOKit.framework/Versions/A/IOKit", RTLD_LAZY) else {
@@ -256,21 +255,6 @@ class DisplaysViewModel: ObservableObject {
                     ddcMismatchCountByDisplayIdentity[displayIdentity] ?? 0,
                     ddcMissingCountByDisplayIdentity[displayIdentity] ?? 0
                 )
-
-            debugLogDisplayResolution(
-                displayID: displayID,
-                displayName: displayName,
-                isBuiltIn: isBuiltIn,
-                isManagedHidden: isManagedHidden,
-                isActive: probe.activeDisplaySet.contains(displayID),
-                snapshot: transportSnapshot,
-                hpmSnapshot: nil,
-                dcpSnapshot: nil,
-                ddcSnapshot: ddcSnapshot,
-                expectedInputSource: expectedInputSource,
-                state: state,
-                isAvailable: isAvailable
-            )
 
             if !isBuiltIn && !isManagedHidden && !isAvailable {
                 return nil
@@ -508,10 +492,6 @@ class DisplaysViewModel: ObservableObject {
         fetchDisplays()
     }
 
-    func notifyChange() {
-        displays = displays
-    }
-
     func markDisplaysBusy(_ displayIDs: Set<CGDirectDisplayID>) {
         busyDisplayIDs.formUnion(displayIDs)
     }
@@ -639,7 +619,6 @@ class DisplaysViewModel: ObservableObject {
         defer { IOObjectRelease(iterator) }
 
         var snapshots: [DisplayTransportSnapshot] = []
-        let includeVerboseRegistryDebug = isVerboseRegistryDebugEnabled
 
         while true {
             let service = IOIteratorNext(iterator)
@@ -660,217 +639,9 @@ class DisplaysViewModel: ObservableObject {
                     edidUUID: recursiveStringProperty(named: "EDID UUID", on: service),
                     isActive: (properties["Active"] as? Bool) ?? false,
                     sinkCount: intProperty(named: "SinkCount", in: properties),
-                    linkRate: intProperty(named: "LinkRate", in: properties),
-                    subtreeHash: includeVerboseRegistryDebug ? debugRegistrySubtreeHash(for: service) : nil,
-                    subtreeServices: includeVerboseRegistryDebug ? debugRegistrySubtreeCapture(for: service) : nil
+                    linkRate: intProperty(named: "LinkRate", in: properties)
                 )
             )
-        }
-
-        return snapshots
-    }
-
-    private func currentDCPRemotePortSnapshots() -> [DCPRemotePortSnapshot] {
-        guard let matchingDictionary = IOServiceMatching("AppleDCPDPTXRemotePortUFP") else { return [] }
-
-        var iterator: io_iterator_t = 0
-        let matchingStatus = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDictionary, &iterator)
-        guard matchingStatus == KERN_SUCCESS else { return [] }
-
-        defer { IOObjectRelease(iterator) }
-
-        var snapshots: [DCPRemotePortSnapshot] = []
-        let includeVerboseRegistryDebug = isVerboseRegistryDebugEnabled
-
-        while true {
-            let service = IOIteratorNext(iterator)
-            guard service != 0 else { break }
-            defer { IOObjectRelease(service) }
-
-            guard let properties = ioRegistryProperties(for: service) else { continue }
-            let displayHints = properties["DisplayHints"] as? [String: Any] ?? [:]
-            let eventLog = properties["EventLog"] as? [[String: Any]] ?? []
-
-            var registryID: UInt64 = 0
-            IORegistryEntryGetRegistryEntryID(service, &registryID)
-
-            var stateValues: [String: Int] = [:]
-            var lastAction: String?
-            var lastEventTime: UInt64?
-            var lastEventClass: String?
-            var lastStateName: String?
-            var lastStateValue: Int?
-
-            for event in eventLog {
-                if let eventTime = (event["EventTime"] as? NSNumber)?.uint64Value {
-                    lastEventTime = eventTime
-                }
-                if let eventClass = event["EventClass"] as? String {
-                    lastEventClass = eventClass
-                }
-
-                guard let payload = event["EventPayload"] as? [String: Any] else { continue }
-
-                if let state = payload["State"] as? String,
-                   let value = (payload["Value"] as? NSNumber)?.intValue {
-                    stateValues[state] = value
-                    lastStateName = state
-                    lastStateValue = value
-                }
-
-                if let action = payload["Action"] as? String,
-                   let queueOp = payload["QueueOp"] as? String {
-                    lastAction = "\(queueOp):\(action)"
-                }
-            }
-
-            snapshots.append(
-                DCPRemotePortSnapshot(
-                    registryID: registryID,
-                    productName: displayHints["ProductName"] as? String,
-                    edidUUID: displayHints["EDID UUID"] as? String,
-                    sinkActive: stateValues["SinkActive"],
-                    linkRate: stateValues["LinkRate"],
-                    laneCount: stateValues["LaneCount"],
-                    activate: stateValues["Activate"],
-                    registered: stateValues["Registered"],
-                    lastAction: lastAction,
-                    eventCount: eventLog.count,
-                    lastEventTime: lastEventTime,
-                    lastEventClass: lastEventClass,
-                    lastStateName: lastStateName,
-                    lastStateValue: lastStateValue,
-                    subtreeHash: includeVerboseRegistryDebug ? debugRegistrySubtreeHash(for: service) : nil,
-                    subtreeServices: includeVerboseRegistryDebug ? debugRegistrySubtreeCapture(for: service) : nil
-                )
-            )
-        }
-
-        return snapshots
-    }
-
-    private func currentHPMSnapshots() -> [HPMDisplaySnapshot] {
-        guard let matchingDictionary = IOServiceMatching("AppleHPMInterfaceType10") else { return [] }
-
-        var iterator: io_iterator_t = 0
-        let matchingStatus = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDictionary, &iterator)
-        guard matchingStatus == KERN_SUCCESS else { return [] }
-
-        defer { IOObjectRelease(iterator) }
-
-        var snapshots: [HPMDisplaySnapshot] = []
-        let includeVerboseRegistryDebug = isVerboseRegistryDebugEnabled
-
-        while true {
-            let hpmService = IOIteratorNext(iterator)
-            guard hpmService != 0 else { break }
-            defer { IOObjectRelease(hpmService) }
-
-            guard let hpmProperties = ioRegistryProperties(for: hpmService) else { continue }
-
-            var hpmRegistryID: UInt64 = 0
-            IORegistryEntryGetRegistryEntryID(hpmService, &hpmRegistryID)
-
-            let connectionActive = (hpmProperties["ConnectionActive"] as? Bool) ?? false
-            let activeCable = (hpmProperties["ActiveCable"] as? Bool) ?? false
-            let transportsActive = hpmProperties["TransportsActive"] as? [String] ?? []
-            let transportsProvisioned = hpmProperties["TransportsProvisioned"] as? [String] ?? []
-            let transportsUnauthorized = hpmProperties["TransportsUnauthorized"] as? [String] ?? []
-
-            var childIterator: io_iterator_t = 0
-            let childStatus = IORegistryEntryCreateIterator(
-                hpmService,
-                kIOServicePlane,
-                IOOptionBits(kIORegistryIterateRecursively),
-                &childIterator
-            )
-            guard childStatus == KERN_SUCCESS else { continue }
-            defer { IOObjectRelease(childIterator) }
-
-            while true {
-                let childService = IOIteratorNext(childIterator)
-                guard childService != 0 else { break }
-                defer { IOObjectRelease(childService) }
-
-                guard serviceClassName(childService) == "IOPortTransportStateDisplayPort",
-                      let properties = ioRegistryProperties(for: childService) else {
-                    continue
-                }
-
-                let metadata = properties["Metadata"] as? [String: Any] ?? [:]
-                var childRegistryID: UInt64 = 0
-                IORegistryEntryGetRegistryEntryID(childService, &childRegistryID)
-
-                snapshots.append(
-                    HPMDisplaySnapshot(
-                        hpmRegistryID: hpmRegistryID,
-                        displayPortRegistryID: childRegistryID,
-                        productName: stringProperty(named: "ProductName", in: properties, fallback: metadata),
-                        productID: uint32Property(named: "ProductID", in: properties, fallback: metadata),
-                        serialNumber: uint32Property(named: "SerialNumber", in: properties, fallback: metadata),
-                        edidUUID: recursiveStringProperty(named: "EDID UUID", on: childService),
-                        connectionActive: connectionActive,
-                        activeCable: activeCable,
-                        transportsActive: transportsActive,
-                        transportsProvisioned: transportsProvisioned,
-                        transportsUnauthorized: transportsUnauthorized,
-                        subtreeHash: includeVerboseRegistryDebug ? debugRegistrySubtreeHash(for: hpmService) : nil,
-                        subtreeServices: includeVerboseRegistryDebug ? debugRegistrySubtreeCapture(for: hpmService) : nil
-                    )
-                )
-            }
-        }
-
-        return snapshots
-    }
-
-    private func currentAuxiliaryRegistrySnapshots() -> [AuxiliaryRegistrySnapshot] {
-        let classNames = [
-            "DCPAVServiceProxy",
-            "DCPAVVideoInterfaceProxy",
-            "DCPAVAudioDriver",
-            "DCPAVAudioInterfaceProxy",
-            "DCPDPServiceProxy",
-            "DCPAVControllerProxy",
-            "DCPDPControllerProxy",
-            "DCPAVDeviceProxy",
-            "DCPDPDeviceProxy"
-        ]
-
-        var snapshots: [AuxiliaryRegistrySnapshot] = []
-        let includeVerboseRegistryDebug = isVerboseRegistryDebugEnabled
-
-        for className in classNames {
-            guard let matchingDictionary = IOServiceMatching(className) else { continue }
-
-            var iterator: io_iterator_t = 0
-            let matchingStatus = IOServiceGetMatchingServices(kIOMainPortDefault, matchingDictionary, &iterator)
-            guard matchingStatus == KERN_SUCCESS else { continue }
-
-            defer { IOObjectRelease(iterator) }
-
-            while true {
-                let service = IOIteratorNext(iterator)
-                guard service != 0 else { break }
-                defer { IOObjectRelease(service) }
-
-                var registryID: UInt64 = 0
-                IORegistryEntryGetRegistryEntryID(service, &registryID)
-
-                let identity = recursiveDisplayIdentity(on: service)
-                snapshots.append(
-                    AuxiliaryRegistrySnapshot(
-                        className: className,
-                        registryID: registryID,
-                        edidUUID: recursiveStringProperty(named: "device UID", on: service)
-                            ?? recursiveStringProperty(named: "EDID UUID", on: service),
-                        location: recursiveStringProperty(named: "Location", on: service),
-                        identity: identity,
-                        subtreeHash: includeVerboseRegistryDebug ? debugRegistrySubtreeHash(for: service) : nil,
-                        subtreeServices: includeVerboseRegistryDebug ? debugRegistrySubtreeCapture(for: service) : nil
-                    )
-                )
-            }
         }
 
         return snapshots
@@ -906,109 +677,6 @@ class DisplaysViewModel: ObservableObject {
 
             matches[displayID] = bestMatch.element
             availableSnapshots.remove(at: bestMatch.offset)
-        }
-
-        return matches
-    }
-
-    private func matchedDCPRemotePortSnapshotsByDisplayID(
-        displayIDs: [CGDirectDisplayID],
-        edidUUIDByDisplayID: [CGDirectDisplayID: String],
-        snapshots: [DCPRemotePortSnapshot]
-    ) -> [CGDirectDisplayID: DCPRemotePortSnapshot] {
-        var snapshotsByUUID: [String: DCPRemotePortSnapshot] = [:]
-        for snapshot in snapshots {
-            guard let edidUUID = snapshot.edidUUID else { continue }
-            snapshotsByUUID[edidUUID] = snapshot
-        }
-
-        var matches: [CGDirectDisplayID: DCPRemotePortSnapshot] = [:]
-        for displayID in displayIDs {
-            guard let edidUUID = edidUUIDByDisplayID[displayID],
-                  let snapshot = snapshotsByUUID[edidUUID] else {
-                continue
-            }
-            matches[displayID] = snapshot
-        }
-
-        return matches
-    }
-
-    private func matchedHPMSnapshotsByDisplayID(
-        displayIDs: [CGDirectDisplayID],
-        edidUUIDByDisplayID: [CGDirectDisplayID: String],
-        snapshots: [HPMDisplaySnapshot]
-    ) -> [CGDirectDisplayID: HPMDisplaySnapshot] {
-        var availableSnapshots = snapshots
-        var matches: [CGDirectDisplayID: HPMDisplaySnapshot] = [:]
-
-        for displayID in displayIDs {
-            let displayName = NSScreen.screens.first(where: { $0.displayID == displayID })?.localizedName ?? "Display \(displayID)"
-            let displayModel = CGDisplayModelNumber(displayID)
-            let displaySerial = CGDisplaySerialNumber(displayID)
-            let targetUUID = edidUUIDByDisplayID[displayID]
-
-            guard let bestMatch = availableSnapshots.enumerated().max(by: {
-                hpmMatchScore(snapshot: $0.element, targetUUID: targetUUID, displayName: displayName, displayModel: displayModel, displaySerial: displaySerial)
-                    < hpmMatchScore(snapshot: $1.element, targetUUID: targetUUID, displayName: displayName, displayModel: displayModel, displaySerial: displaySerial)
-            }) else {
-                continue
-            }
-
-            let score = hpmMatchScore(
-                snapshot: bestMatch.element,
-                targetUUID: targetUUID,
-                displayName: displayName,
-                displayModel: displayModel,
-                displaySerial: displaySerial
-            )
-            guard score > 0 else { continue }
-
-            matches[displayID] = bestMatch.element
-            availableSnapshots.remove(at: bestMatch.offset)
-        }
-
-        return matches
-    }
-
-    private func matchedAuxiliaryRegistrySnapshotsByDisplayID(
-        displayIDs: [CGDirectDisplayID],
-        edidUUIDByDisplayID: [CGDirectDisplayID: String],
-        snapshots: [AuxiliaryRegistrySnapshot]
-    ) -> [CGDirectDisplayID: [AuxiliaryRegistrySnapshot]] {
-        var matches: [CGDirectDisplayID: [AuxiliaryRegistrySnapshot]] = [:]
-
-        for snapshot in snapshots {
-            var bestDisplayID: CGDirectDisplayID?
-            var bestScore = 0
-
-            for displayID in displayIDs {
-                let displayName = NSScreen.screens.first(where: { $0.displayID == displayID })?.localizedName ?? ""
-                let score = auxiliaryMatchScore(
-                    snapshot: snapshot,
-                    targetUUID: edidUUIDByDisplayID[displayID],
-                    displayName: displayName,
-                    displayModel: CGDisplayModelNumber(displayID),
-                    displaySerial: CGDisplaySerialNumber(displayID)
-                )
-
-                if score > bestScore {
-                    bestScore = score
-                    bestDisplayID = displayID
-                }
-            }
-
-            guard let bestDisplayID, bestScore > 0 else { continue }
-            matches[bestDisplayID, default: []].append(snapshot)
-        }
-
-        for displayID in matches.keys {
-            matches[displayID]?.sort {
-                if $0.className != $1.className {
-                    return $0.className < $1.className
-                }
-                return $0.registryID < $1.registryID
-            }
         }
 
         return matches
@@ -1988,88 +1656,6 @@ class DisplaysViewModel: ObservableObject {
 #endif
     }
 
-    private func debugLogSessionProbe(
-        displayIDs: [CGDirectDisplayID],
-        edidUUIDByDisplayID: [CGDirectDisplayID: String],
-        hpmByDisplayID: [CGDirectDisplayID: HPMDisplaySnapshot],
-        dcpRemotePortByDisplayID: [CGDirectDisplayID: DCPRemotePortSnapshot]
-    ) {
-#if DEBUG
-        _ = displayIDs
-        _ = edidUUIDByDisplayID
-        _ = hpmByDisplayID
-        _ = dcpRemotePortByDisplayID
-#endif
-    }
-
-    private func debugLogComprehensiveDiagnostics(
-        displayIDs: [CGDirectDisplayID],
-        activeDisplaySet: Set<CGDirectDisplayID>,
-        edidUUIDByDisplayID: [CGDirectDisplayID: String],
-        transportByDisplayID: [CGDirectDisplayID: DisplayTransportSnapshot],
-        hpmByDisplayID: [CGDirectDisplayID: HPMDisplaySnapshot],
-        dcpRemotePortByDisplayID: [CGDirectDisplayID: DCPRemotePortSnapshot],
-        auxiliaryRegistryByDisplayID: [CGDirectDisplayID: [AuxiliaryRegistrySnapshot]],
-        ddcInputSourcesByDisplayID: [CGDirectDisplayID: DDCInputSourceSnapshot]
-    ) {
-#if DEBUG
-        for displayID in displayIDs {
-            let displayName = NSScreen.screens.first(where: { $0.displayID == displayID })?.localizedName ?? "Display \(displayID)"
-            let cgService = cgDisplayIOServicePort?(displayID) ?? 0
-            let cgClass = cgService == 0 ? "none" : (serviceClassName(cgService) ?? "unknown")
-            var cgBusCount: IOItemCount = 0
-            let cgBusStatus = cgService == 0 ? kern_return_t(-1) : IOFBGetI2CInterfaceCount(cgService, &cgBusCount)
-
-            let cgsService = cgsServiceForDisplay(displayID)
-            let cgsClass = cgsService.map { serviceClassName($0) ?? "unknown" } ?? "none"
-            var cgsBusCount: IOItemCount = 0
-            let cgsBusStatus = cgsService.map { IOFBGetI2CInterfaceCount($0, &cgsBusCount) } ?? kern_return_t(-1)
-
-            let uuid = edidUUIDByDisplayID[displayID] ?? "nil"
-            let transportSummary = transportByDisplayID[displayID].map(debugSnapshotSummary(_:)) ?? "transport(none)"
-            let hpmSummary = hpmByDisplayID[displayID].map(debugHPMSnapshotSummary(_:)) ?? "hpm=none"
-            let dcpSummary = dcpRemotePortByDisplayID[displayID].map(debugDCPRemotePortSummary(_:)) ?? "dcp=none"
-            let auxSummary = auxiliaryRegistryByDisplayID[displayID].map(debugAuxiliaryRegistrySummary(_:)) ?? "aux=[]"
-            let ddcSummary = ddcInputSourcesByDisplayID[displayID].map(debugDDCSnapshotSummary(_:)) ?? "ddc(none)"
-            let ddcStages = pendingDDCDebugStages[displayID, default: []]
-            let ddcStageSummary = ddcStages.isEmpty ? "ddcStages=[]" : "ddcStages=[\(ddcStages.joined(separator: " | "))]"
-
-            print("[LightsOut][Diag] \(displayName) [id=\(displayID), active=\(activeDisplaySet.contains(displayID)), uuid=\(uuid), cgServiceClass=\(cgClass), cgBusStatus=\(cgBusStatus), cgBusCount=\(cgBusCount), cgsServiceClass=\(cgsClass), cgsBusStatus=\(cgsBusStatus), cgsBusCount=\(cgsBusCount)] \(transportSummary) \(hpmSummary) \(dcpSummary) \(auxSummary) \(ddcSummary) \(ddcStageSummary)")
-
-            if let transportSnapshot = transportByDisplayID[displayID] {
-                debugLogRegistryPropertyDiff(
-                    scope: "transport:\(displayID)",
-                    services: transportSnapshot.subtreeServices,
-                    label: "\(displayName) transport"
-                )
-            }
-            if let hpmSnapshot = hpmByDisplayID[displayID] {
-                debugLogRegistryPropertyDiff(
-                    scope: "hpm:\(hpmSnapshot.hpmRegistryID)",
-                    services: hpmSnapshot.subtreeServices,
-                    label: "\(displayName) hpm"
-                )
-            }
-            if let dcpSnapshot = dcpRemotePortByDisplayID[displayID] {
-                debugLogRegistryPropertyDiff(
-                    scope: "dcp:\(dcpSnapshot.registryID)",
-                    services: dcpSnapshot.subtreeServices,
-                    label: "\(displayName) dcp"
-                )
-            }
-            if let auxSnapshots = auxiliaryRegistryByDisplayID[displayID] {
-                for auxSnapshot in auxSnapshots {
-                    debugLogRegistryPropertyDiff(
-                        scope: "aux:\(auxSnapshot.className):\(auxSnapshot.registryID)",
-                        services: auxSnapshot.subtreeServices,
-                        label: "\(displayName) \(auxSnapshot.className)"
-                    )
-                }
-            }
-        }
-#endif
-    }
-
     private func debugLogSwiftDDCProbe(
         displayIDs: [CGDirectDisplayID],
         edidUUIDByDisplayID: [CGDirectDisplayID: String],
@@ -2300,12 +1886,6 @@ class DisplaysViewModel: ObservableObject {
         return (values[0] << 10) | (values[1] << 5) | values[2]
     }
 
-    private func isDDCAvailable(_ snapshot: DDCInputSourceSnapshot?, expectedInputSource: UInt16?) -> Bool {
-        guard let snapshot else { return true }
-        guard let expectedInputSource else { return true }
-        return snapshot.currentValue == expectedInputSource
-    }
-
     private func resolveDDCAvailability(
         for displayIdentity: DisplayIdentity,
         snapshot: DDCInputSourceSnapshot?,
@@ -2418,36 +1998,6 @@ class DisplaysViewModel: ObservableObject {
         return String(cString: className)
     }
 
-    private func debugLogDisplayResolution(
-        displayID: CGDirectDisplayID,
-        displayName: String,
-        isBuiltIn: Bool,
-        isManagedHidden: Bool,
-        isActive: Bool,
-        snapshot: DisplayTransportSnapshot?,
-        hpmSnapshot: HPMDisplaySnapshot?,
-        dcpSnapshot: DCPRemotePortSnapshot?,
-        ddcSnapshot: DDCInputSourceSnapshot?,
-        expectedInputSource: UInt16?,
-        state: DisplayState,
-        isAvailable: Bool
-    ) {
-#if DEBUG
-        _ = displayID
-        _ = displayName
-        _ = isBuiltIn
-        _ = isManagedHidden
-        _ = isActive
-        _ = snapshot
-        _ = hpmSnapshot
-        _ = dcpSnapshot
-        _ = ddcSnapshot
-        _ = expectedInputSource
-        _ = state
-        _ = isAvailable
-#endif
-    }
-
     private func debugStateName(_ state: DisplayState) -> String {
         switch state {
         case .active:
@@ -2459,67 +2009,6 @@ class DisplaysViewModel: ObservableObject {
         }
     }
 
-    private func debugSnapshotSummary(_ snapshot: DisplayTransportSnapshot) -> String {
-        let name = snapshot.productName ?? "unknown"
-        let productID = snapshot.productID.map(String.init) ?? "nil"
-        let serial = snapshot.serialNumber.map(String.init) ?? "nil"
-        let edidUUID = snapshot.edidUUID ?? "nil"
-        let active = snapshot.isActive ? "yes" : "no"
-        let sinkCount = snapshot.sinkCount.map(String.init) ?? "nil"
-        let linkRate = snapshot.linkRate.map(String.init) ?? "nil"
-        let subtreeHash = snapshot.subtreeHash ?? "nil"
-        return "\(name) [registryID=\(snapshot.registryID), productID=\(productID), serial=\(serial), edidUUID=\(edidUUID), active=\(active), sink=\(sinkCount), link=\(linkRate), hash=\(subtreeHash)]"
-    }
-
-    private func debugDCPRemotePortSummary(_ snapshot: DCPRemotePortSnapshot) -> String {
-        let name = snapshot.productName ?? "unknown"
-        let edidUUID = snapshot.edidUUID ?? "nil"
-        let sinkActive = snapshot.sinkActive.map(String.init) ?? "nil"
-        let linkRate = snapshot.linkRate.map(String.init) ?? "nil"
-        let laneCount = snapshot.laneCount.map(String.init) ?? "nil"
-        let activate = snapshot.activate.map(String.init) ?? "nil"
-        let registered = snapshot.registered.map(String.init) ?? "nil"
-        let action = snapshot.lastAction ?? "nil"
-        let eventCount = String(snapshot.eventCount)
-        let eventTime = snapshot.lastEventTime.map(String.init) ?? "nil"
-        let eventClass = snapshot.lastEventClass ?? "nil"
-        let eventState: String
-        if let lastStateName = snapshot.lastStateName,
-           let lastStateValue = snapshot.lastStateValue {
-            eventState = "\(lastStateName)=\(lastStateValue)"
-        } else {
-            eventState = "nil"
-        }
-        let subtreeHash = snapshot.subtreeHash ?? "nil"
-        return "dcp=\(name) [registryID=\(snapshot.registryID), edidUUID=\(edidUUID), sink=\(sinkActive), link=\(linkRate), lanes=\(laneCount), activate=\(activate), registered=\(registered), action=\(action), events=\(eventCount), lastTime=\(eventTime), lastClass=\(eventClass), lastState=\(eventState), hash=\(subtreeHash)]"
-    }
-
-    private func debugHPMSnapshotSummary(_ snapshot: HPMDisplaySnapshot) -> String {
-        let name = snapshot.productName ?? "unknown"
-        let productID = snapshot.productID.map(String.init) ?? "nil"
-        let serial = snapshot.serialNumber.map(String.init) ?? "nil"
-        let edidUUID = snapshot.edidUUID ?? "nil"
-        let connectionActive = snapshot.connectionActive ? "yes" : "no"
-        let activeCable = snapshot.activeCable ? "yes" : "no"
-        let transportsActive = snapshot.transportsActive.joined(separator: ",")
-        let transportsProvisioned = snapshot.transportsProvisioned.joined(separator: ",")
-        let transportsUnauthorized = snapshot.transportsUnauthorized.joined(separator: ",")
-        let subtreeHash = snapshot.subtreeHash ?? "nil"
-        return "hpm=\(name) [registryID=\(snapshot.hpmRegistryID), dpRegistryID=\(snapshot.displayPortRegistryID), productID=\(productID), serial=\(serial), edidUUID=\(edidUUID), connection=\(connectionActive), cable=\(activeCable), active=\(transportsActive), provisioned=\(transportsProvisioned), unauthorized=\(transportsUnauthorized), hash=\(subtreeHash)]"
-    }
-
-    private func debugAuxiliaryRegistrySummary(_ snapshots: [AuxiliaryRegistrySnapshot]) -> String {
-        let parts = snapshots.map { snapshot in
-            let uuid = snapshot.edidUUID ?? "nil"
-            let location = snapshot.location ?? "nil"
-            let productID = snapshot.identity.map { String($0.productID) } ?? "nil"
-            let serial = snapshot.identity.map { String($0.serialNumber) } ?? "nil"
-            let subtreeHash = snapshot.subtreeHash ?? "nil"
-            return "\(snapshot.className)@\(snapshot.registryID){uuid=\(uuid),loc=\(location),product=\(productID),serial=\(serial),hash=\(subtreeHash)}"
-        }
-        return "aux=[\(parts.joined(separator: ", "))]"
-    }
-
     private func debugDDCSnapshotSummary(_ snapshot: DDCInputSourceSnapshot) -> String {
         let rawReply = snapshot.rawReply.map { String(format: "%02X", $0) }.joined(separator: " ")
         return "ddc(bus=\(snapshot.busIndex), current=\(String(format: "0x%02X", snapshot.currentValue)), max=\(String(format: "0x%02X", snapshot.maximumValue)), raw=[\(rawReply)])"
@@ -2528,14 +2017,6 @@ class DisplaysViewModel: ObservableObject {
     private func debugChosenDDCSnapshotSummary(_ snapshot: DDCInputSourceSnapshot?) -> String {
         guard let snapshot else { return "ddc=none" }
         return "ddc={bus=\(snapshot.busIndex),current=\(String(format: "0x%02X", snapshot.currentValue)),max=\(String(format: "0x%02X", snapshot.maximumValue))}"
-    }
-
-    private var isVerboseRegistryDebugEnabled: Bool {
-#if DEBUG
-        isVerboseDDCDebugEnabled
-#else
-        false
-#endif
     }
 
     private var isLegacyDDCFallbackEnabled: Bool {
@@ -2572,58 +2053,6 @@ class DisplaysViewModel: ObservableObject {
         return String(format: "0x%02X", value)
     }
 
-    private func hpmMatchScore(
-        snapshot: HPMDisplaySnapshot,
-        targetUUID: String?,
-        displayName: String,
-        displayModel: UInt32,
-        displaySerial: UInt32
-    ) -> Int {
-        var score = 0
-
-        if let targetUUID, let edidUUID = snapshot.edidUUID, targetUUID == edidUUID {
-            score += 100
-        }
-        if let productID = snapshot.productID, productID == displayModel, displayModel != 0 {
-            score += 10
-        }
-        if let serialNumber = snapshot.serialNumber, serialNumber == displaySerial, displaySerial != 0 {
-            score += 10
-        }
-        if let productName = snapshot.productName, productName == displayName {
-            score += 3
-        }
-
-        return score
-    }
-
-    private func auxiliaryMatchScore(
-        snapshot: AuxiliaryRegistrySnapshot,
-        targetUUID: String?,
-        displayName: String,
-        displayModel: UInt32,
-        displaySerial: UInt32
-    ) -> Int {
-        var score = 0
-
-        if let targetUUID, let edidUUID = snapshot.edidUUID, targetUUID == edidUUID {
-            score += 100
-        }
-        if let identity = snapshot.identity {
-            if identity.productID == displayModel, displayModel != 0 {
-                score += 20
-            }
-            if identity.serialNumber == displaySerial, displaySerial != 0 {
-                score += 20
-            }
-            if identity.displayName == displayName, !displayName.isEmpty {
-                score += 5
-            }
-        }
-
-        return score
-    }
-
     private func recursiveDisplayIdentity(on service: io_service_t) -> DisplayIdentity? {
         guard let displayAttributes = IORegistryEntrySearchCFProperty(
             service,
@@ -2646,174 +2075,6 @@ class DisplaysViewModel: ObservableObject {
         )
     }
 
-    private func debugRegistrySubtreeHash(for service: io_service_t) -> String? {
-#if DEBUG
-        var fragments: [String] = []
-        appendDebugRegistryFragment(for: service, into: &fragments)
-
-        var iterator: io_iterator_t = 0
-        let status = IORegistryEntryCreateIterator(
-            service,
-            kIOServicePlane,
-            IOOptionBits(kIORegistryIterateRecursively),
-            &iterator
-        )
-        guard status == KERN_SUCCESS else {
-            return String(fragments.joined(separator: "|").hashValue)
-        }
-        defer { IOObjectRelease(iterator) }
-
-        while true {
-            let child = IOIteratorNext(iterator)
-            guard child != 0 else { break }
-            defer { IOObjectRelease(child) }
-            appendDebugRegistryFragment(for: child, into: &fragments)
-        }
-
-        return String(fragments.sorted().joined(separator: "|").hashValue)
-#else
-        return nil
-#endif
-    }
-
-    private func appendDebugRegistryFragment(for service: io_service_t, into fragments: inout [String]) {
-#if DEBUG
-        var registryID: UInt64 = 0
-        IORegistryEntryGetRegistryEntryID(service, &registryID)
-        let className = serviceClassName(service) ?? "unknown"
-        let properties = ioRegistryProperties(for: service) ?? [:]
-        let normalized = debugNormalizeRegistryValue(properties)
-        fragments.append("\(className)#\(registryID)=\(normalized)")
-#else
-        _ = service
-        _ = &fragments
-#endif
-    }
-
-    private func debugNormalizeRegistryValue(_ value: Any) -> String {
-        if let string = value as? String {
-            return "\"\(string)\""
-        }
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-        if let bool = value as? Bool {
-            return bool ? "true" : "false"
-        }
-        if let data = value as? Data {
-            return "<\(data.prefix(16).map { String(format: "%02X", $0) }.joined())...len=\(data.count)>"
-        }
-        if let dictionary = value as? [String: Any] {
-            let parts = dictionary.keys.sorted().map { key in
-                "\(key):\(debugNormalizeRegistryValue(dictionary[key] ?? "nil"))"
-            }
-            return "{\(parts.joined(separator: ","))}"
-        }
-        if let array = value as? [Any] {
-            return "[\(array.map(debugNormalizeRegistryValue(_:)).joined(separator: ","))]"
-        }
-        if CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() {
-            return (value as? NSNumber)?.boolValue == true ? "true" : "false"
-        }
-        return String(describing: value)
-    }
-
-    private func debugRegistrySubtreeCapture(for service: io_service_t) -> [DebugRegistryServiceSnapshot]? {
-#if DEBUG
-        var snapshots: [DebugRegistryServiceSnapshot] = []
-        appendDebugRegistryServiceSnapshot(for: service, into: &snapshots)
-
-        var iterator: io_iterator_t = 0
-        let status = IORegistryEntryCreateIterator(
-            service,
-            kIOServicePlane,
-            IOOptionBits(kIORegistryIterateRecursively),
-            &iterator
-        )
-        guard status == KERN_SUCCESS else {
-            return snapshots
-        }
-        defer { IOObjectRelease(iterator) }
-
-        while true {
-            let child = IOIteratorNext(iterator)
-            guard child != 0 else { break }
-            defer { IOObjectRelease(child) }
-            appendDebugRegistryServiceSnapshot(for: child, into: &snapshots)
-        }
-
-        return snapshots.sorted {
-            if $0.className != $1.className { return $0.className < $1.className }
-            return $0.registryID < $1.registryID
-        }
-#else
-        return nil
-#endif
-    }
-
-    private func appendDebugRegistryServiceSnapshot(for service: io_service_t, into snapshots: inout [DebugRegistryServiceSnapshot]) {
-#if DEBUG
-        var registryID: UInt64 = 0
-        IORegistryEntryGetRegistryEntryID(service, &registryID)
-        let className = serviceClassName(service) ?? "unknown"
-        let properties = ioRegistryProperties(for: service) ?? [:]
-        var normalizedProperties: [String: String] = [:]
-        for key in properties.keys.sorted() {
-            normalizedProperties[key] = debugNormalizeRegistryValue(properties[key] ?? "nil")
-        }
-        snapshots.append(
-            DebugRegistryServiceSnapshot(
-                className: className,
-                registryID: registryID,
-                properties: normalizedProperties
-            )
-        )
-#else
-        _ = service
-        _ = &snapshots
-#endif
-    }
-
-    private func debugLogRegistryPropertyDiff(
-        scope: String,
-        services: [DebugRegistryServiceSnapshot]?,
-        label: String
-    ) {
-#if DEBUG
-        guard let services else { return }
-        let current = Dictionary(uniqueKeysWithValues: services.map { ($0.scopeKey, $0.properties) })
-        defer { previousDebugRegistryPropertiesByScope[scope] = current }
-
-        guard let previous = previousDebugRegistryPropertiesByScope[scope] else { return }
-
-        var changes: [String] = []
-        for serviceKey in Set(previous.keys).union(current.keys).sorted() {
-            switch (previous[serviceKey], current[serviceKey]) {
-            case (nil, let currentProperties?):
-                changes.append("\(serviceKey) added keys=\(currentProperties.keys.count)")
-            case (let previousProperties?, nil):
-                changes.append("\(serviceKey) removed keys=\(previousProperties.keys.count)")
-            case (let previousProperties?, let currentProperties?):
-                let changedKeys = Set(previousProperties.keys).union(currentProperties.keys).sorted().compactMap { key -> String? in
-                    let before = previousProperties[key]
-                    let after = currentProperties[key]
-                    guard before != after else { return nil }
-                    return key
-                }
-
-                guard !changedKeys.isEmpty else { continue }
-                let preview = changedKeys.prefix(8).joined(separator: ",")
-                let suffix = changedKeys.count > 8 ? ",..." : ""
-                changes.append("\(serviceKey) changed[\(preview)\(suffix)]")
-            case (nil, nil):
-                continue
-            }
-        }
-
-        guard !changes.isEmpty else { return }
-        print("[LightsOut][Diff] \(label) \(changes.joined(separator: " ; "))")
-#endif
-    }
 }
 
 private struct DisplayTransportSnapshot {
@@ -2825,53 +2086,6 @@ private struct DisplayTransportSnapshot {
     let isActive: Bool
     let sinkCount: Int?
     let linkRate: Int?
-    let subtreeHash: String?
-    let subtreeServices: [DebugRegistryServiceSnapshot]?
-}
-
-private struct DCPRemotePortSnapshot {
-    let registryID: UInt64
-    let productName: String?
-    let edidUUID: String?
-    let sinkActive: Int?
-    let linkRate: Int?
-    let laneCount: Int?
-    let activate: Int?
-    let registered: Int?
-    let lastAction: String?
-    let eventCount: Int
-    let lastEventTime: UInt64?
-    let lastEventClass: String?
-    let lastStateName: String?
-    let lastStateValue: Int?
-    let subtreeHash: String?
-    let subtreeServices: [DebugRegistryServiceSnapshot]?
-}
-
-private struct HPMDisplaySnapshot {
-    let hpmRegistryID: UInt64
-    let displayPortRegistryID: UInt64
-    let productName: String?
-    let productID: UInt32?
-    let serialNumber: UInt32?
-    let edidUUID: String?
-    let connectionActive: Bool
-    let activeCable: Bool
-    let transportsActive: [String]
-    let transportsProvisioned: [String]
-    let transportsUnauthorized: [String]
-    let subtreeHash: String?
-    let subtreeServices: [DebugRegistryServiceSnapshot]?
-}
-
-private struct AuxiliaryRegistrySnapshot {
-    let className: String
-    let registryID: UInt64
-    let edidUUID: String?
-    let location: String?
-    let identity: DisplayIdentity?
-    let subtreeHash: String?
-    let subtreeServices: [DebugRegistryServiceSnapshot]?
 }
 
 private struct DebugAVProbeCandidate {
@@ -2880,16 +2094,6 @@ private struct DebugAVProbeCandidate {
     let registryID: UInt64
     var roles: [String]
     let insertionOrder: Int
-}
-
-private struct DebugRegistryServiceSnapshot {
-    let className: String
-    let registryID: UInt64
-    let properties: [String: String]
-
-    var scopeKey: String {
-        "\(className)#\(registryID)"
-    }
 }
 
 private struct DDCReadResponse {
