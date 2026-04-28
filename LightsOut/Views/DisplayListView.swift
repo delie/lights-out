@@ -342,7 +342,7 @@ struct DisplayControlView: View {
     @State private var isBusy = false
 
     private var isOn: Bool {
-        display.state == .active && display.isAvailable
+        display.state == .active
     }
 
     var body: some View {
@@ -442,13 +442,9 @@ struct DisplayControlView: View {
     }
 
     private var statusLabel: String {
-        if !display.isAvailable {
-            return "Unavailable"
-        }
-
         switch display.state {
         case .disconnected:
-            return "Hidden"
+            return display.isAvailable ? "Hidden" : "Unavailable"
         case .active:
             return "Visible"
         case .pending:

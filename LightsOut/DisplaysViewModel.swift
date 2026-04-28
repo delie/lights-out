@@ -241,9 +241,10 @@ class DisplaysViewModel: ObservableObject {
             )
             let isClamshellBlockedBuiltIn = isBuiltIn && isManagedHidden && probe.clamshellState != .open
             let isAvailable = transportAvailable && ddcAvailable && !isClamshellBlockedBuiltIn
+            let macConsidersActive = probe.activeDisplaySet.contains(displayID)
             let state: DisplayState = isManagedHidden
                 ? .disconnected
-                : ((probe.activeDisplaySet.contains(displayID) && isAvailable) ? .active : .disconnected)
+                : (macConsidersActive ? .active : .disconnected)
             expectedInputSourceByDisplayID[displayID] = expectedInputSource
             ddcAvailabilityByDisplayID[displayID] = ddcAvailable
             finalAvailabilityByDisplayID[displayID] = isAvailable
@@ -256,7 +257,7 @@ class DisplaysViewModel: ObservableObject {
                     ddcMissingCountByDisplayIdentity[displayIdentity] ?? 0
                 )
 
-            if !isBuiltIn && !isManagedHidden && !isAvailable {
+            if !isBuiltIn && !isManagedHidden && !isAvailable && !macConsidersActive {
                 return nil
             }
 
