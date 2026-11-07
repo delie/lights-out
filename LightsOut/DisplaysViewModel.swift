@@ -1413,8 +1413,8 @@ class DisplaysViewModel: ObservableObject {
 #else
         _ = seedService
         _ = seedLabel
-        _ = &candidatesByRegistryID
-        _ = &insertionOrder
+        _ = candidatesByRegistryID
+        _ = insertionOrder
 #endif
     }
 
@@ -1459,8 +1459,8 @@ class DisplaysViewModel: ObservableObject {
         _ = rolePrefix
         _ = currentDepth
         _ = maxDepth
-        _ = &candidatesByRegistryID
-        _ = &insertionOrder
+        _ = candidatesByRegistryID
+        _ = insertionOrder
 #endif
     }
 
@@ -1500,8 +1500,8 @@ class DisplaysViewModel: ObservableObject {
 #else
         _ = service
         _ = role
-        _ = &candidatesByRegistryID
-        _ = &insertionOrder
+        _ = candidatesByRegistryID
+        _ = insertionOrder
 #endif
     }
 
