@@ -23,7 +23,13 @@ class DisplaysViewModel: ObservableObject {
     private enum PersistenceKeys {
         static let disabledDisplayIDsForRecovery = "DisabledDisplayIDsForRecovery"
         static let pendingReactivationDisplayIDs = "PendingReactivationDisplayIDs"
+        static let hiddenDisplayIdentities = "HiddenDisplayIdentities"
     }
+
+    /// Highest display ID checked when looking for a switched-off monitor whose ID changed.
+    /// Apple Silicon Macs hand out small, increasing IDs; on Intel Macs IDs are stable per
+    /// monitor, so the saved IDs cover those.
+    private static let displayIDScanLimit: CGDirectDisplayID = 1024
 
     private enum DDCConstants {
         static let getVCPFeatureReplyOpcode: UInt8 = 0x02
@@ -91,6 +97,8 @@ class DisplaysViewModel: ObservableObject {
         let onlineDisplayIDs: [CGDirectDisplayID]
         let hiddenDisplayIDs: [CGDirectDisplayID]
         let pendingReactivationDisplayIDs: [CGDirectDisplayID]
+        let identityMatchedHiddenDisplayNames: [CGDirectDisplayID: String]
+        let identityMatches: SavedIdentityMatches
         let clamshellState: ClamshellState
         let activeDisplaySet: Set<CGDirectDisplayID>
         let primaryDisplayID: CGDirectDisplayID
@@ -159,7 +167,8 @@ class DisplaysViewModel: ObservableObject {
 
         let onlineDisplayIDs = Array(onlineDisplays.prefix(Int(onlineDisplayCount)))
         let activeDisplaySet = Set(activeDisplays.prefix(Int(activeDisplayCount)))
-        let hiddenDisplayIDs = Array(loadDisabledDisplayIDsForRecovery())
+        let identityMatches = switchedOffDisplaysMatchingSavedIdentities(activeDisplayIDs: activeDisplaySet)
+        let hiddenDisplayIDs = Array(loadDisabledDisplayIDsForRecovery().union(identityMatches.displayIDs))
         let pendingReactivationDisplayIDs = Array(loadPendingReactivationDisplayIDs())
         let probeDisplayIDs = Array(Set(onlineDisplayIDs).union(hiddenDisplayIDs).union(pendingReactivationDisplayIDs))
         let clamshellState = currentClamshellState()
@@ -180,6 +189,8 @@ class DisplaysViewModel: ObservableObject {
             onlineDisplayIDs: onlineDisplayIDs,
             hiddenDisplayIDs: hiddenDisplayIDs,
             pendingReactivationDisplayIDs: pendingReactivationDisplayIDs,
+            identityMatchedHiddenDisplayNames: identityMatches.entriesByDisplayID.compactMapValues { $0.first?.name },
+            identityMatches: identityMatches,
             clamshellState: clamshellState,
             activeDisplaySet: activeDisplaySet,
             primaryDisplayID: CGMainDisplayID(),
@@ -193,6 +204,8 @@ class DisplaysViewModel: ObservableObject {
         _ probe: DisplayRefreshProbe,
         displayNamesByID: [CGDirectDisplayID: String]
     ) {
+        migrateSavedHiddenDisplayIDs(using: probe.identityMatches)
+
         let onlineDisplaySet = Set(probe.onlineDisplayIDs)
         let originalPersistedDisabledDisplayIDs = loadDisabledDisplayIDsForRecovery()
         let originalPendingReactivationDisplayIDs = loadPendingReactivationDisplayIDs()
@@ -204,6 +217,14 @@ class DisplaysViewModel: ObservableObject {
         let activeDisplayIDs = probe.activeDisplaySet
         persistedDisabledDisplayIDs.subtract(activeDisplayIDs)
         pendingReactivationDisplayIDs.subtract(activeDisplayIDs)
+
+        // A monitor hidden earlier can come back under a new display ID after it is replugged or
+        // power-cycled, while macOS still has it switched off. Track it under the ID it has now.
+        persistedDisabledDisplayIDs.formUnion(
+            Set(probe.identityMatchedHiddenDisplayNames.keys)
+                .subtracting(activeDisplayIDs)
+                .subtracting(pendingReactivationDisplayIDs)
+        )
 
         let existingByID = Dictionary(uniqueKeysWithValues: displays.map { ($0.id, $0) })
         var expectedInputSourceByDisplayID: [CGDirectDisplayID: UInt16?] = [:]
@@ -331,6 +352,26 @@ class DisplaysViewModel: ObservableObject {
             }
         }
 
+        let displayIDsWithRows = Set(newDisplays.map(\.id))
+        for (displayID, savedName) in probe.identityMatchedHiddenDisplayNames
+        where !displayIDsWithRows.contains(displayID) && persistedDisabledDisplayIDs.contains(displayID) {
+            let isBuiltIn = CGDisplayIsBuiltin(displayID) != 0
+            let isAvailable = !(isBuiltIn && probe.clamshellState != .open)
+            newDisplays.insert(
+                DisplayInfo(
+                    id: displayID,
+                    name: resolvedDisplayName(for: displayID, displayNamesByID: displayNamesByID, fallbackName: savedName),
+                    state: .disconnected,
+                    isPrimary: false,
+                    isBuiltIn: isBuiltIn,
+                    isUserHidden: true,
+                    isAvailable: isAvailable
+                )
+            )
+            resolvedStateByDisplayID[displayID] = .disconnected
+            finalAvailabilityByDisplayID[displayID] = isAvailable
+        }
+
         for displayID in pendingReactivationDisplayIDs where !onlineDisplaySet.contains(displayID) {
             let displayName = resolvedDisplayName(for: displayID, displayNamesByID: displayNamesByID)
             let displayIdentity = DisplayIdentity(displayID: displayID, displayName: displayName)
@@ -390,6 +431,8 @@ class DisplaysViewModel: ObservableObject {
             persistPendingReactivationDisplayIDs(pendingReactivationDisplayIDs)
         }
 
+        forgetSavedHiddenDisplaysThatAreActive()
+
         if !autoReconnectDisplayIDs.isEmpty {
             DispatchQueue.main.async { [weak self] in
                 self?.attemptPendingDisplayReconnections(autoReconnectDisplayIDs)
@@ -402,6 +445,9 @@ class DisplaysViewModel: ObservableObject {
             throw DisplayError(msg: "At least one display must remain visible.")
         }
 
+        let hardwareIdentityBeforeHiding = hardwareIdentity(for: display.id)
+        // Read while the monitor is still active; it may not be readable once it is switched off.
+        let alphanumericSerialBeforeHiding = alphanumericSerialNumber(for: display.id)
         display.state = .pending
         willChangeDisplays?([display.id])
 
@@ -425,10 +471,20 @@ class DisplaysViewModel: ObservableObject {
 
         display.state = .disconnected
         persistDisabledDisplayIDForRecovery(display.id)
+        if let hardwareIdentityBeforeHiding {
+            rememberHiddenDisplay(
+                display.id,
+                identity: hardwareIdentityBeforeHiding,
+                alphanumericSerial: alphanumericSerialBeforeHiding,
+                name: display.name
+            )
+        }
         didChangeDisplays?()
     }
 
-    func turnOnDisplay(display: DisplayInfo) throws(DisplayError) {
+    /// - Parameter forgetSavedIdentity: Pass `false` when re-enabling as part of a reset, so the
+    ///   saved identity is kept until a later refresh confirms the monitor actually came back.
+    func turnOnDisplay(display: DisplayInfo, forgetSavedIdentity: Bool = true) throws(DisplayError) {
         if display.state == .disconnected {
             if display.isBuiltIn && currentClamshellState() != .open {
                 throw DisplayError(msg: "Open the lid before enabling the built-in display.")
@@ -440,22 +496,27 @@ class DisplaysViewModel: ObservableObject {
                 do {
                     try reconnectDisplay(displayID: display.id)
                     removePendingReactivationDisplayID(display.id)
+                    if forgetSavedIdentity {
+                        forgetSavedHiddenDisplay(display.id)
+                    }
                     fetchDisplays()
                 } catch {
                     didChangeDisplays?()
                     fetchDisplays()
                 }
             } else {
-                try reconnectDisplay(display: display)
+                try reconnectDisplay(display: display, forgetSavedIdentity: forgetSavedIdentity)
             }
         }
     }
 
     func resetAllDisplays() {
-        let persistedDisabledDisplayIDs = loadDisabledDisplayIDsForRecovery()
+        let identityMatches = switchedOffDisplaysMatchingSavedIdentities(activeDisplayIDs: currentActiveDisplayIDs())
+        migrateSavedHiddenDisplayIDs(using: identityMatches)
+        let persistedDisabledDisplayIDs = loadDisabledDisplayIDsForRecovery().union(identityMatches.displayIDs)
 
         for display in displays {
-            try? turnOnDisplay(display: display)
+            try? turnOnDisplay(display: display, forgetSavedIdentity: false)
         }
 
         CGDisplayRestoreColorSyncSettings()
@@ -476,11 +537,17 @@ class DisplaysViewModel: ObservableObject {
     }
 
     func recoverDisabledDisplaysFromPreviousSessionIfNeeded() {
+        saveIdentitiesForDisplaysHiddenBeforeIdentityTracking(loadDisabledDisplayIDsForRecovery())
+        // Saved IDs go stale when a monitor is replugged or power-cycled, so also look the
+        // monitors up by vendor, model and serial number under whatever ID they have now.
+        let identityMatches = switchedOffDisplaysMatchingSavedIdentities(activeDisplayIDs: currentActiveDisplayIDs())
+        migrateSavedHiddenDisplayIDs(using: identityMatches)
         let disabledDisplayIDs = loadDisabledDisplayIDsForRecovery()
-        guard !disabledDisplayIDs.isEmpty else { return }
+        let identityMatchedDisplayIDs = identityMatches.displayIDs
+        guard !disabledDisplayIDs.isEmpty || !identityMatchedDisplayIDs.isEmpty else { return }
 
         var remainingDisabledDisplayIDs = disabledDisplayIDs
-        for displayID in disabledDisplayIDs {
+        for displayID in disabledDisplayIDs.union(identityMatchedDisplayIDs) {
             do {
                 try reconnectDisplay(displayID: displayID)
                 remainingDisabledDisplayIDs.remove(displayID)
@@ -491,6 +558,11 @@ class DisplaysViewModel: ObservableObject {
 
         persistDisabledDisplayIDsForRecovery(remainingDisabledDisplayIDs)
         fetchDisplays()
+        // macOS brings re-enabled monitors up asynchronously; rescan once that has settled so the
+        // list (and the check that forgets recovered monitors) sees them.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.fetchDisplays()
+        }
     }
 
     func markDisplaysBusy(_ displayIDs: Set<CGDirectDisplayID>) {
@@ -526,11 +598,13 @@ class DisplaysViewModel: ObservableObject {
         }
 
         for display in fallbackDisplays {
-            if !isPlaceholderDisplayName(display.name) {
-                rememberDisplayName(display.name, for: display.id)
+            // Rows carry the maker-code prefix; keep the names used for matching as macOS gives them.
+            let rawName = removingManufacturerCode(from: display.name, for: display.id)
+            if !isPlaceholderDisplayName(rawName) {
+                rememberDisplayName(rawName, for: display.id)
             }
             if namesByID[display.id] == nil {
-                namesByID[display.id] = preferredDisplayName(for: display.id, fallbackName: display.name)
+                namesByID[display.id] = preferredDisplayName(for: display.id, fallbackName: rawName)
             }
         }
 
@@ -542,12 +616,48 @@ class DisplaysViewModel: ObservableObject {
         displayNamesByID: [CGDirectDisplayID: String],
         fallbackName: String? = nil
     ) -> String {
-        let candidateName = displayNamesByID[displayID] ?? fallbackName
+        let candidateName = (displayNamesByID[displayID] ?? fallbackName)
+            .map { removingManufacturerCode(from: $0, for: displayID) }
         let resolvedName = preferredDisplayName(for: displayID, fallbackName: candidateName)
         if !isPlaceholderDisplayName(resolvedName) {
             rememberDisplayName(resolvedName, for: displayID)
         }
-        return resolvedName
+        return addingManufacturerCode(to: resolvedName, for: displayID)
+    }
+
+    /// Prefixes an external monitor's name with its brand (e.g. "Philips 27M2N5900A"), since many
+    /// monitors report only a model number. The brand comes from the EDID maker code; makers not in
+    /// `MonitorBrands` show the 3-letter code instead. Skipped when the name
+    /// already starts with the brand or code (e.g. "DELL U2723QE").
+    private func addingManufacturerCode(to name: String, for displayID: CGDirectDisplayID) -> String {
+        guard CGDisplayIsBuiltin(displayID) == 0,
+              !isPlaceholderDisplayName(name),
+              let code = Self.manufacturerCode(forVendorID: CGDisplayVendorNumber(displayID)) else {
+            return name
+        }
+        let label = MonitorBrands.name(forManufacturerCode: code) ?? code
+        let uppercasedName = name.uppercased()
+        guard !uppercasedName.hasPrefix(label.uppercased()), !uppercasedName.hasPrefix(code) else {
+            return name
+        }
+        return "\(label) \(name)"
+    }
+
+    private func removingManufacturerCode(from name: String, for displayID: CGDirectDisplayID) -> String {
+        guard let code = Self.manufacturerCode(forVendorID: CGDisplayVendorNumber(displayID)) else {
+            return name
+        }
+        let label = MonitorBrands.name(forManufacturerCode: code) ?? code
+        guard name.hasPrefix("\(label) ") else { return name }
+        return String(name.dropFirst(label.count + 1))
+    }
+
+    /// macOS gives the EDID maker code as a 16-bit number holding three 5-bit letters (1 = A).
+    private static func manufacturerCode(forVendorID vendorID: UInt32) -> String? {
+        guard vendorID != 0, vendorID <= 0x7FFF else { return nil }
+        let letters = [(vendorID >> 10) & 0x1F, (vendorID >> 5) & 0x1F, vendorID & 0x1F]
+        guard letters.allSatisfy({ (1...26).contains($0) }) else { return nil }
+        return String(letters.map { Character(UnicodeScalar(UInt8($0) + 64)) })
     }
 
     private func preferredDisplayName(for displayID: CGDirectDisplayID, fallbackName: String?) -> String {
@@ -2162,6 +2272,74 @@ private struct DisplayHardwareIdentity: Hashable {
     let serialNumber: UInt32
 }
 
+/// A monitor the user hid, saved by hardware identity so it can be found again after its
+/// display ID changes (for example after the monitor is replugged or power-cycled).
+private struct SavedHiddenDisplay: Codable, Hashable {
+    let vendorID: UInt32
+    let productID: UInt32
+    let serialNumber: UInt32
+    var lastKnownDisplayID: CGDirectDisplayID
+    var name: String
+    /// The text serial from the monitor's EDID (e.g. "S7LMQS078357"). Some monitors report a
+    /// placeholder numeric serial (ASUS PG32UCDP gives 0x01010101), so this is what tells two
+    /// identical monitors apart. Missing for entries saved by older builds.
+    var alphanumericSerialNumber: String?
+
+    func isSameHardware(as identity: DisplayHardwareIdentity, alphanumericSerial: String? = nil) -> Bool {
+        vendorID == identity.vendorID && productID == identity.productID && serialNumber == identity.serialNumber
+            && alphanumericSerialMatches(alphanumericSerial)
+    }
+
+    /// `isSameHardware`, but for deleting or overwriting a saved entry. A placeholder numeric serial
+    /// says nothing about which physical monitor this is, so without both text serials an identical
+    /// monitor could be mistaken for this one and its saved entry lost.
+    func isDefinitelySameHardware(as identity: DisplayHardwareIdentity, alphanumericSerial: String?) -> Bool {
+        guard isSameHardware(as: identity, alphanumericSerial: alphanumericSerial) else { return false }
+        let hasPlaceholderSerial = serialNumber == 0 || serialNumber == 0x01010101
+        return !hasPlaceholderSerial || (alphanumericSerialNumber != nil && alphanumericSerial != nil)
+    }
+
+    func matches(_ identity: DisplayHardwareIdentity) -> Bool {
+        let vendorMatches = vendorID == 0 || identity.vendorID == 0 || vendorID == identity.vendorID
+        let serialMatches = serialNumber == 0 || identity.serialNumber == 0 || serialNumber == identity.serialNumber
+        return productID == identity.productID && vendorMatches && serialMatches
+    }
+
+    /// Only rules a monitor out when both text serials are known and differ.
+    func alphanumericSerialMatches(_ other: String?) -> Bool {
+        guard let alphanumericSerialNumber, let other else { return true }
+        return alphanumericSerialNumber == other
+    }
+}
+
+/// The saved hidden monitors found switched off in a scan of candidate display IDs.
+private struct SavedIdentityMatches {
+    /// Every saved entry that matched each display ID, in saved order. Never empty for a key.
+    let entriesByDisplayID: [CGDirectDisplayID: [SavedHiddenDisplay]]
+
+    var displayIDs: Set<CGDirectDisplayID> { Set(entriesByDisplayID.keys) }
+
+    /// Saved entries now found under a different display ID. Limited to one-to-one matches, so
+    /// identical monitors can't be swapped for each other.
+    var movedEntries: [(entry: SavedHiddenDisplay, displayID: CGDirectDisplayID)] {
+        var matchCountByEntry: [SavedHiddenDisplay: Int] = [:]
+        for entries in entriesByDisplayID.values {
+            for entry in entries {
+                matchCountByEntry[entry, default: 0] += 1
+            }
+        }
+        return entriesByDisplayID.compactMap { displayID, entries in
+            guard entries.count == 1,
+                  let entry = entries.first,
+                  entry.lastKnownDisplayID != displayID,
+                  matchCountByEntry[entry] == 1 else {
+                return nil
+            }
+            return (entry, displayID)
+        }
+    }
+}
+
 private struct IOAVServiceFunctions {
     let createWithService: DisplaysViewModel.IOAVServiceCreateWithServiceFunction
     let copyEDID: DisplaysViewModel.IOAVServiceCopyEDIDFunction
@@ -2170,7 +2348,7 @@ private struct IOAVServiceFunctions {
 }
 
 extension DisplaysViewModel {
-    fileprivate func reconnectDisplay(display: DisplayInfo) throws(DisplayError) {
+    fileprivate func reconnectDisplay(display: DisplayInfo, forgetSavedIdentity: Bool) throws(DisplayError) {
         if display.isBuiltIn && currentClamshellState() != .open {
             throw DisplayError(msg: "Open the lid before enabling the built-in display.")
         }
@@ -2201,6 +2379,10 @@ extension DisplaysViewModel {
         display.state = .active
         display.isAvailable = true
         removeDisabledDisplayIDForRecovery(display.id)
+        // Before the refresh below, so its background scan can't find the entry and re-hide the row.
+        if forgetSavedIdentity {
+            forgetSavedHiddenDisplay(display.id)
+        }
         didChangeDisplays?()
         fetchDisplays()
     }
@@ -2294,6 +2476,228 @@ extension DisplaysViewModel {
         } else {
             defaults.set(displayIDs.map(Int.init), forKey: PersistenceKeys.pendingReactivationDisplayIDs)
         }
+    }
+
+    private typealias CoreDisplayCreateInfoDictionaryFunction = @convention(c) (CGDirectDisplayID) -> Unmanaged<CFDictionary>?
+
+    private static let coreDisplayCreateInfoDictionary: CoreDisplayCreateInfoDictionaryFunction? = {
+        guard let handle = dlopen("/System/Library/Frameworks/CoreDisplay.framework/CoreDisplay", RTLD_LAZY),
+              let symbol = dlsym(handle, "CoreDisplay_DisplayCreateInfoDictionary") else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: CoreDisplayCreateInfoDictionaryFunction.self)
+    }()
+
+    /// The monitor's text serial (EDID serial string), e.g. "S7LMQS078357". CoreDisplay gives the
+    /// IORegistry path of the display's framebuffer, whose DisplayAttributes hold the serial.
+    /// Returns nil for the built-in panel, or when macOS doesn't expose it (possibly while the
+    /// monitor is switched off).
+    private func alphanumericSerialNumber(for displayID: CGDirectDisplayID) -> String? {
+        guard let createInfoDictionary = Self.coreDisplayCreateInfoDictionary,
+              let info = createInfoDictionary(displayID)?.takeRetainedValue() as? [String: Any],
+              let path = info["IODisplayLocation"] as? String else {
+            return nil
+        }
+        let entry = IORegistryEntryFromPath(kIOMainPortDefault, path)
+        guard entry != 0 else { return nil }
+        defer { IOObjectRelease(entry) }
+
+        guard let displayAttributes = IORegistryEntryCreateCFProperty(
+                entry,
+                "DisplayAttributes" as CFString,
+                kCFAllocatorDefault,
+                0
+              )?.takeRetainedValue() as? [String: Any],
+              let productAttributes = displayAttributes["ProductAttributes"] as? [String: Any],
+              let serial = (productAttributes["AlphanumericSerialNumber"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !serial.isEmpty else {
+            return nil
+        }
+        return serial
+    }
+
+    private func currentActiveDisplayIDs() -> Set<CGDirectDisplayID> {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &displayIDs, &count)
+        return Set(displayIDs.prefix(Int(count)))
+    }
+
+    private func loadSavedHiddenDisplays() -> [SavedHiddenDisplay] {
+        guard let data = defaults.data(forKey: PersistenceKeys.hiddenDisplayIdentities),
+              let saved = try? JSONDecoder().decode([SavedHiddenDisplay].self, from: data) else {
+            return []
+        }
+        return saved
+    }
+
+    private func persistSavedHiddenDisplays(_ saved: [SavedHiddenDisplay]) {
+        if saved.isEmpty {
+            defaults.removeObject(forKey: PersistenceKeys.hiddenDisplayIdentities)
+        } else if let data = try? JSONEncoder().encode(saved) {
+            defaults.set(data, forKey: PersistenceKeys.hiddenDisplayIdentities)
+        }
+    }
+
+    private func rememberHiddenDisplay(
+        _ displayID: CGDirectDisplayID,
+        identity: DisplayHardwareIdentity,
+        alphanumericSerial: String?,
+        name: String
+    ) {
+        var saved = loadSavedHiddenDisplays().filter {
+            !$0.isDefinitelySameHardware(as: identity, alphanumericSerial: alphanumericSerial)
+        }
+        saved.append(
+            SavedHiddenDisplay(
+                vendorID: identity.vendorID,
+                productID: identity.productID,
+                serialNumber: identity.serialNumber,
+                lastKnownDisplayID: displayID,
+                name: name,
+                alphanumericSerialNumber: alphanumericSerial
+            )
+        )
+        persistSavedHiddenDisplays(saved)
+    }
+
+    /// Displays hidden by an older build were saved by ID only. If macOS can still tell us
+    /// which monitor an old ID belonged to, save its identity so it can be found under a new ID.
+    private func saveIdentitiesForDisplaysHiddenBeforeIdentityTracking(_ displayIDs: Set<CGDirectDisplayID>) {
+        let saved = loadSavedHiddenDisplays()
+        for displayID in displayIDs where !saved.contains(where: { $0.lastKnownDisplayID == displayID }) {
+            guard let identity = hardwareIdentity(for: displayID),
+                  identity.productID != UInt32.max else {
+                continue
+            }
+            let alphanumericSerial = alphanumericSerialNumber(for: displayID)
+            guard !saved.contains(where: { $0.isSameHardware(as: identity, alphanumericSerial: alphanumericSerial) }) else {
+                continue
+            }
+            rememberHiddenDisplay(
+                displayID,
+                identity: identity,
+                alphanumericSerial: alphanumericSerial,
+                name: preferredDisplayName(for: displayID, fallbackName: nil)
+            )
+        }
+    }
+
+    private func forgetSavedHiddenDisplay(_ displayID: CGDirectDisplayID) {
+        let saved = loadSavedHiddenDisplays()
+        guard !saved.isEmpty else { return }
+        let identity = hardwareIdentity(for: displayID)
+        let alphanumericSerial = alphanumericSerialNumber(for: displayID)
+        let remaining = saved.filter { entry in
+            if entry.lastKnownDisplayID == displayID { return false }
+            if let identity, entry.isDefinitelySameHardware(as: identity, alphanumericSerial: alphanumericSerial) { return false }
+            return true
+        }
+        if remaining.count != saved.count {
+            persistSavedHiddenDisplays(remaining)
+        }
+    }
+
+    /// Forgets saved hidden monitors that macOS reports as active right now. Checked live rather
+    /// than from a refresh probe, so a probe taken just before a hide can't wipe the new entry.
+    private func forgetSavedHiddenDisplaysThatAreActive() {
+        let saved = loadSavedHiddenDisplays()
+        guard !saved.isEmpty else { return }
+        // Compare text serials too, so an identical monitor that is still on doesn't make
+        // LightsOut forget the one that was hidden.
+        let activeIdentities = currentActiveDisplayIDs().compactMap { displayID in
+            hardwareIdentity(for: displayID).map { (displayID, $0, alphanumericSerialNumber(for: displayID)) }
+        }
+        let remaining = saved.filter { entry in
+            !activeIdentities.contains { displayID, identity, alphanumericSerial in
+                // The saved ID being active identifies a monitor the strict check can't (placeholder serial, no text serial).
+                entry.isDefinitelySameHardware(as: identity, alphanumericSerial: alphanumericSerial)
+                    || (entry.lastKnownDisplayID == displayID
+                        && entry.matches(identity)
+                        && entry.alphanumericSerialMatches(alphanumericSerial))
+            }
+        }
+        if remaining.count != saved.count {
+            persistSavedHiddenDisplays(remaining)
+        }
+    }
+
+    /// Finds monitors the user hid that macOS knows about but has switched off, keyed by the
+    /// display ID they have now. A switched-off monitor is not in the online display list, and
+    /// its ID can change when it is replugged or power-cycled, so this checks candidate IDs and
+    /// matches on vendor, model and serial number.
+    private func switchedOffDisplaysMatchingSavedIdentities(
+        activeDisplayIDs: Set<CGDirectDisplayID>
+    ) -> SavedIdentityMatches {
+        let saved = loadSavedHiddenDisplays()
+        guard !saved.isEmpty else { return SavedIdentityMatches(entriesByDisplayID: [:]) }
+
+        var candidateDisplayIDs = Set<CGDirectDisplayID>(1...Self.displayIDScanLimit)
+        candidateDisplayIDs.formUnion(saved.map(\.lastKnownDisplayID))
+        candidateDisplayIDs.formUnion(loadDisabledDisplayIDsForRecovery())
+        candidateDisplayIDs.formUnion(loadPendingReactivationDisplayIDs())
+        candidateDisplayIDs.subtract(activeDisplayIDs)
+
+        var entriesByDisplayID: [CGDirectDisplayID: [SavedHiddenDisplay]] = [:]
+        for displayID in candidateDisplayIDs.sorted() {
+            guard let identity = hardwareIdentity(for: displayID),
+                  identity.productID != UInt32.max else {
+                continue
+            }
+            let numericMatches = saved.filter { $0.matches(identity) }
+            guard !numericMatches.isEmpty else { continue }
+            // Only look up the text serial for the few IDs that pass the cheap numeric check.
+            let alphanumericSerial = alphanumericSerialNumber(for: displayID)
+            let entries = numericMatches.filter { $0.alphanumericSerialMatches(alphanumericSerial) }
+            guard !entries.isEmpty else { continue }
+            entriesByDisplayID[displayID] = entries
+        }
+        return SavedIdentityMatches(entriesByDisplayID: entriesByDisplayID)
+    }
+
+    /// Moves monitors that came back under a new display ID off their old ID, so the old ID can't
+    /// produce a second hidden row or make Show fail. Call on the main thread: the matches may come
+    /// from a background scan, and this rewrites state the main thread also writes.
+    private func migrateSavedHiddenDisplayIDs(using matches: SavedIdentityMatches) {
+        let movedEntries = matches.movedEntries
+        guard !movedEntries.isEmpty else { return }
+
+        var saved = loadSavedHiddenDisplays()
+        var disabledDisplayIDs = loadDisabledDisplayIDsForRecovery()
+        var pendingDisplayIDs = loadPendingReactivationDisplayIDs()
+
+        var oldDisplayIDs = Set<CGDirectDisplayID>()
+        var newDisabledDisplayIDs = Set<CGDirectDisplayID>()
+        var newPendingDisplayIDs = Set<CGDirectDisplayID>()
+        for (entry, displayID) in movedEntries {
+            // Skip entries changed or forgotten since the scan.
+            guard let index = saved.firstIndex(of: entry) else { continue }
+            saved[index].lastKnownDisplayID = displayID
+            oldDisplayIDs.insert(entry.lastKnownDisplayID)
+            if pendingDisplayIDs.contains(entry.lastKnownDisplayID) {
+                newPendingDisplayIDs.insert(displayID)
+            } else {
+                newDisabledDisplayIDs.insert(displayID)
+            }
+        }
+        guard !oldDisplayIDs.isEmpty else { return }
+
+        // Remove every old ID before adding the new ones so two monitors that swapped IDs both
+        // survive, but keep an old ID that another hidden monitor is using now.
+        let displayIDsStillInUse = matches.displayIDs
+            .subtracting(newDisabledDisplayIDs)
+            .subtracting(newPendingDisplayIDs)
+        let staleDisplayIDs = oldDisplayIDs.subtracting(displayIDsStillInUse)
+        disabledDisplayIDs.subtract(staleDisplayIDs)
+        pendingDisplayIDs.subtract(staleDisplayIDs)
+        pendingDisplayIDs.formUnion(newPendingDisplayIDs)
+        disabledDisplayIDs.formUnion(newDisabledDisplayIDs.subtracting(pendingDisplayIDs))
+
+        persistSavedHiddenDisplays(saved)
+        persistDisabledDisplayIDsForRecovery(disabledDisplayIDs)
+        persistPendingReactivationDisplayIDs(pendingDisplayIDs)
     }
 
     private func attemptPendingDisplayReconnections(_ displayIDs: [CGDirectDisplayID]) {
