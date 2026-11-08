@@ -621,25 +621,31 @@ class DisplaysViewModel: ObservableObject {
         return addingManufacturerCode(to: resolvedName, for: displayID)
     }
 
-    /// Prefixes an external monitor's name with its 3-letter EDID maker code (e.g. "PHL 27M2N5900A"),
-    /// since many monitors report only a model number. Skipped when the name already starts with
-    /// the code (e.g. "DELL U2723QE").
+    /// Prefixes an external monitor's name with its brand (e.g. "Philips 27M2N5900A"), since many
+    /// monitors report only a model number. The brand comes from the EDID maker code; makers not in
+    /// `MonitorBrands` show the 3-letter code instead. Skipped when the name
+    /// already starts with the brand or code (e.g. "DELL U2723QE").
     private func addingManufacturerCode(to name: String, for displayID: CGDirectDisplayID) -> String {
         guard CGDisplayIsBuiltin(displayID) == 0,
               !isPlaceholderDisplayName(name),
-              let code = Self.manufacturerCode(forVendorID: CGDisplayVendorNumber(displayID)),
-              !name.uppercased().hasPrefix(code) else {
+              let code = Self.manufacturerCode(forVendorID: CGDisplayVendorNumber(displayID)) else {
             return name
         }
-        return "\(code) \(name)"
+        let label = MonitorBrands.name(forManufacturerCode: code) ?? code
+        let uppercasedName = name.uppercased()
+        guard !uppercasedName.hasPrefix(label.uppercased()), !uppercasedName.hasPrefix(code) else {
+            return name
+        }
+        return "\(label) \(name)"
     }
 
     private func removingManufacturerCode(from name: String, for displayID: CGDirectDisplayID) -> String {
-        guard let code = Self.manufacturerCode(forVendorID: CGDisplayVendorNumber(displayID)),
-              name.hasPrefix("\(code) ") else {
+        guard let code = Self.manufacturerCode(forVendorID: CGDisplayVendorNumber(displayID)) else {
             return name
         }
-        return String(name.dropFirst(code.count + 1))
+        let label = MonitorBrands.name(forManufacturerCode: code) ?? code
+        guard name.hasPrefix("\(label) ") else { return name }
+        return String(name.dropFirst(label.count + 1))
     }
 
     /// macOS gives the EDID maker code as a 16-bit number holding three 5-bit letters (1 = A).
